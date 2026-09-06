@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [0.4.3] - 2026-09-06
+
+### 修复
+
+- **打字机模式依旧不生效**：0.4.2 的修复存在三处根本缺陷——① 分屏预览（默认模式）的源码侧是 textarea，光标不进入 `window.getSelection()`，滚动函数从不执行；② 所见即所得 / 即时渲染模式下滚动挂在 vditor 的 `options.input` 回调上，被其 800ms 防抖吞掉，连续打字时永不触发；③ vditor 会把三种编辑形态的元素（textarea / 两个 contenteditable pre）同时放进 DOM 仅靠显隐切换，按类名粗放查找会命中隐藏形态的元素，事件监听全挂在永远不触发的元素上。现改为按模式限定选择器定位编辑元素、直接监听其原生 `input` / `selectionchange` 事件；textarea 走镜像 div 测量光标纵坐标，contenteditable 走折叠选区矩形（空行 / 块尾全零矩形时回退邻字符与父块）；方向键、点击、Home/End 移动光标同样触发居中，开启开关立即居中一次
+
 ## [0.4.2] - 2026-09-06
 
 ### 修复

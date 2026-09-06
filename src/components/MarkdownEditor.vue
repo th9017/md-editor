@@ -38,6 +38,11 @@ let scrollContainer: HTMLElement | null = null
 let headingEls: HTMLElement[] = []
 let spyRaf = 0
 let typewriterRaf = 0
+let editingEl: HTMLElement | null = null
+let mirrorEl: HTMLDivElement | null = null
+let elInputHandler: (() => void) | null = null
+let elSelectionHandler: (() => void) | null = null
+let docSelectionHandler: (() => void) | null = null
 let fixupRaf = 0
 let imgObserver: MutationObserver | null = null
 
@@ -45,6 +50,7 @@ const dark = (): boolean => isDarkTheme(store.theme)
 
 /** Vditor 不支持运行时改 mode/主题，切换时整体重建实例 */
 function build(mode: MdMode): void {
+  detachCaretListeners()
   vditor?.destroy()
   vditor = null
   if (!el.value) return
@@ -82,6 +88,7 @@ function build(mode: MdMode): void {
       }
       parseOutlineSoon(props.value)
       setupScrollSpy()
+      setupCaretListeners(mode)
       setupImgFixup()
       fixupImgs()
     },
@@ -287,18 +294,163 @@ function jumpTo(heading: Heading): void {
 // ---------- 打字机 / 专注模式 ----------
 
 /**
- * 打字机：把光标所在位置滚动到可视区垂直居中。
- * 用选区矩形 + 最近可滚动祖先实现，对所见即所得 / 即时渲染 / 分屏源码三种模式通用。
+ * 打字机的两个前置事实决定了实现方式：
+ * 1. vditor 把 options.input 包在 undoDelay=800ms 的防抖里，连续打字期间永不触发，
+ *    所以必须绕开它，直接监听编辑元素的原生 input / selectionchange；
+ * 2. sv 分屏的源码侧是 textarea，其光标不进入 document 选区（window.getSelection 看不见），
+ *    必须用镜像 div 测量光标纵坐标；ir/wysiwyg 是 contenteditable，走选区几何。
  */
+
+/**
+ * 定位当前编辑形态的实际编辑元素。
+ * 注意 vditor 把三种编辑形态的元素同时放进 DOM（wysiwyg 的 pre、ir 的 pre、sv 的 textarea），
+ * 仅靠显隐切换，所以必须按模式限定选择器，否则会命中隐藏形态的元素。
+ */
+function locateEditingEl(mode: MdMode): HTMLElement | null {
+  if (!el.value) return null
+  if (mode === 'sv') return el.value.querySelector<HTMLElement>('textarea.vditor-sv')
+  return el.value.querySelector<HTMLElement>(
+    mode === 'ir' ? '.vditor-ir .vditor-reset' : '.vditor-wysiwyg .vditor-reset',
+  )
+}
+
+/** 在编辑元素上挂原生事件触发打字机 / 专注模式；build 重建与卸载时都要 detach */
+function setupCaretListeners(mode: MdMode): void {
+  detachCaretListeners()
+  const target = locateEditingEl(mode)
+  editingEl = target
+  if (!target) return
+  elInputHandler = () => onCaretActivity()
+  target.addEventListener('input', elInputHandler)
+  if (target instanceof HTMLTextAreaElement) {
+    // Chromium 对 textarea 派发元素级 selectionchange，方向键 / 点击移动光标也能触发
+    elSelectionHandler = () => onCaretActivity()
+    target.addEventListener('selectionchange', elSelectionHandler)
+  } else {
+    docSelectionHandler = () => {
+      const sel = window.getSelection()
+      if (sel?.anchorNode && target.contains(sel.anchorNode)) onCaretActivity()
+    }
+    document.addEventListener('selectionchange', docSelectionHandler)
+  }
+}
+
+function detachCaretListeners(): void {
+  if (elInputHandler && editingEl) editingEl.removeEventListener('input', elInputHandler)
+  if (elSelectionHandler && editingEl) {
+    editingEl.removeEventListener('selectionchange', elSelectionHandler)
+  }
+  if (docSelectionHandler) document.removeEventListener('selectionchange', docSelectionHandler)
+  elInputHandler = null
+  elSelectionHandler = null
+  docSelectionHandler = null
+  editingEl = null
+}
+
+/** 光标当前是否落在编辑元素内（sv 看 activeElement，contenteditable 看选区锚点） */
+function caretInEditingEl(): boolean {
+  const target = editingEl
+  if (!target) return false
+  if (target instanceof HTMLTextAreaElement) return document.activeElement === target
+  const sel = window.getSelection()
+  return !!(sel?.anchorNode && target.contains(sel.anchorNode))
+}
+
+/** 打字机：把光标所在位置滚动到可视区垂直居中，按编辑形态分两条测量路径 */
 function scrollCaretToCenter(): void {
+  if (!caretInEditingEl()) return
+  const target = editingEl
+  if (!target) return
+  if (target instanceof HTMLTextAreaElement) scrollTextareaCaretToCenter(target)
+  else scrollSelectionToCenter()
+}
+
+/** sv 模式：textarea 光标几何不可得，用同款样式的隐藏镜像 div 折算光标纵坐标 */
+function scrollTextareaCaretToCenter(textarea: HTMLTextAreaElement): void {
+  if (textarea.clientWidth === 0) return
+  const mirror = ensureMirrorEl()
+  const cs = getComputedStyle(textarea)
+  // 镜像逐项对齐 textarea，折行位置才一致；clientWidth 已排除滚动条与边框
+  mirror.style.width = `${textarea.clientWidth}px`
+  mirror.style.fontFamily = cs.fontFamily
+  mirror.style.fontSize = cs.fontSize
+  mirror.style.fontWeight = cs.fontWeight
+  mirror.style.fontStyle = cs.fontStyle
+  mirror.style.lineHeight = cs.lineHeight
+  mirror.style.letterSpacing = cs.letterSpacing
+  mirror.style.wordSpacing = cs.wordSpacing
+  mirror.style.tabSize = cs.tabSize
+  mirror.style.textIndent = cs.textIndent
+  mirror.style.padding = cs.padding
+  mirror.style.whiteSpace = cs.whiteSpace
+  mirror.style.overflowWrap = cs.overflowWrap
+  mirror.style.wordBreak = cs.wordBreak
+  const text = textarea.value.slice(0, textarea.selectionEnd)
+  // 以换行结尾（或空文本）时最后一行不产生行盒，补零宽字符才能量出该行位置
+  mirror.textContent = /\n$|^$/.test(text) ? `${text}\u200b` : text
+  const marker = document.createElement('span')
+  marker.textContent = '\u200b'
+  mirror.appendChild(marker)
+  const top = marker.offsetTop
+  const lineHeight = Number.parseFloat(cs.lineHeight) || marker.offsetHeight
+  const delta = top + lineHeight / 2 - (textarea.scrollTop + textarea.clientHeight / 2)
+  if (Math.abs(delta) > 2) textarea.scrollTop += delta
+}
+
+function ensureMirrorEl(): HTMLDivElement {
+  if (!mirrorEl) {
+    mirrorEl = document.createElement('div')
+    mirrorEl.setAttribute('aria-hidden', 'true')
+    mirrorEl.style.position = 'absolute'
+    mirrorEl.style.top = '-9999px'
+    mirrorEl.style.left = '-9999px'
+    mirrorEl.style.visibility = 'hidden'
+    mirrorEl.style.overflow = 'hidden'
+    mirrorEl.style.boxSizing = 'border-box'
+    mirrorEl.style.border = '0'
+    mirrorEl.style.margin = '0'
+    document.body.appendChild(mirrorEl)
+  }
+  return mirrorEl
+}
+
+/** 折叠选区到光标端取矩形；空行 / 块尾等全零矩形时回退到邻字符、再回退到父块 */
+function caretRect(sel: Selection): { rect: DOMRect; node: Node } | null {
+  const range = sel.getRangeAt(0).cloneRange()
+  range.collapse(false)
+  const node = range.startContainer
+  const rect = range.getBoundingClientRect()
+  if (rect.height !== 0 || rect.top !== 0) return { rect, node }
+  const offset = range.startOffset
+  for (const [s, e] of [[offset - 1, offset], [offset, offset + 1]]) {
+    if (s < 0) continue
+    try {
+      const probe = range.cloneRange()
+      probe.setStart(node, s)
+      probe.setEnd(node, e)
+      const r = probe.getBoundingClientRect()
+      if (r.height !== 0 || r.top !== 0) return { rect: r, node }
+    } catch {
+      /* 偏移越界（元素节点按子节点数计）忽略 */
+    }
+  }
+  // 空行时光标父块恰好覆盖该行；.vditor-reset 本体的矩形覆盖整篇，没有定位意义
+  const parent = node instanceof Element ? node : node.parentElement
+  if (parent && !parent.classList.contains('vditor-reset')) {
+    const r = parent.getBoundingClientRect()
+    if (r.height !== 0 || r.top !== 0) return { rect: r, node }
+  }
+  return null
+}
+
+/** ir/wysiwyg：光标矩形 + 最近可滚动祖先，直接改 scrollTop 居中 */
+function scrollSelectionToCenter(): void {
   const sel = window.getSelection()
   if (!sel || !sel.rangeCount) return
-  const rect = sel.getRangeAt(0).getBoundingClientRect()
-  if (rect.height === 0 && rect.top === 0) return
+  const caret = caretRect(sel)
+  if (!caret) return
   let node: HTMLElement | null =
-    sel.anchorNode instanceof HTMLElement
-      ? sel.anchorNode
-      : sel.anchorNode?.parentElement ?? null
+    caret.node instanceof HTMLElement ? caret.node : caret.node.parentElement
   let scroller: HTMLElement | null = null
   while (node && node !== document.body) {
     const oy = getComputedStyle(node).overflowY
@@ -310,11 +462,12 @@ function scrollCaretToCenter(): void {
   }
   if (!scroller) return
   const box = scroller.getBoundingClientRect()
-  const delta = rect.top + rect.height / 2 - (box.top + box.height / 2)
+  const delta = caret.rect.top + caret.rect.height / 2 - (box.top + box.height / 2)
   if (Math.abs(delta) > 2) scroller.scrollTop += delta
 }
 
 function onCaretActivity(): void {
+  if (!caretInEditingEl()) return
   const block = focusBlockEl()
   if (block && store.focusMode) {
     el.value?.querySelectorAll('.vditor-reset .vditor-focus').forEach((n) => {
@@ -373,6 +526,10 @@ defineExpose({
 onMounted(() => build(store.mdMode))
 watch(() => store.mdMode, (m) => build(m))
 watch(() => store.theme, () => build(store.mdMode))
+watch(() => store.typewriter, (on) => {
+  // 打开开关立即把当前光标居中一次，否则首次开启毫无反馈
+  if (on) onCaretActivity()
+})
 watch(
   () => props.revision,
   () => {
@@ -391,6 +548,9 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(spyRaf)
   cancelAnimationFrame(typewriterRaf)
   cancelAnimationFrame(fixupRaf)
+  detachCaretListeners()
+  mirrorEl?.remove()
+  mirrorEl = null
   imgObserver?.disconnect()
   imgObserver = null
   scrollContainer?.removeEventListener('scroll', onScroll)
