@@ -8,11 +8,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows_10_11-0078D6?logo=windows11&logoColor=white)
 ![Version](https://img.shields.io/badge/Version-0.3.0-blue)
 
-## 📷 截图
 
-| 亮色主题 | 暗色主题 |
-| :---: | :---: |
-| ![亮色主题界面](docs/screenshots/light.png) | ![暗色主题界面](docs/screenshots/dark.png) |
 
 ## ✨ 功能特性
 
