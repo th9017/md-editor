@@ -6,9 +6,13 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10_11-0078D6?logo=windows11&logoColor=white)
-![Version](https://img.shields.io/badge/Version-0.3.0-blue)
+![Version](https://img.shields.io/badge/Version-0.4.0-blue)
 
+## 📷 截图
 
+| 亮色主题 | 暗色主题 |
+| :---: | :---: |
+| ![亮色主题界面](docs/screenshots/light.png) | ![暗色主题界面](docs/screenshots/dark.png) |
 
 ## ✨ 功能特性
 
@@ -33,6 +37,7 @@
 
 **其他**
 
+- **多窗口**：一窗一文件（Typora 模式），文件树 / 标签页右键「在新窗口打开」，主题与设置跨窗口实时同步
 - **Git 集成**：分支显示、改动列表与文件树角标、提交全部改动、提交历史、拉取 / 推送（需系统安装 Git）
 - **自定义主题与背景**：5 套主题预设、强调色、字号行距、写作区背景图（遮罩 / 模糊可调）
 - **命令面板**：Ctrl+Shift+P 汇聚全部命令
@@ -42,7 +47,10 @@
 
 ## 📦 下载安装
 
-前往 [Releases](https://github.com/th9017/md-editor/releases) 下载最新安装包，双击安装即可。
+前往 [Releases](https://github.com/th9017/md-editor/releases)，两种形态任选：
+
+- **安装版** `MD-Editor_x.y.z_x64-setup.exe`：双击安装，数据存于系统用户目录，后续升级平滑覆盖
+- **便携版** `MD-Editor-portable.zip`：解压即用、免安装；`MD-Editor.exe` 与 `portable.flag` 放同一目录，背景图与本地历史快照随程序目录整体移动（删除 `portable.flag` 即恢复系统目录存储）
 
 系统要求：Windows 10 / 11（依赖 WebView2 运行时，一般系统已内置）；Git 集成功能需系统安装 [Git](https://git-scm.com/)。
 
@@ -65,6 +73,9 @@ npm run tauri dev
 
 # 打包 Windows 安装程序（NSIS）
 npm run tauri build -- --bundles nsis
+
+# 追加打包便携版 zip
+npm run build:portable
 ```
 
 技术栈：Tauri 2 (Rust) 桌面外壳，Vue 3 + Vite + TypeScript 前端，编辑器基于 [Vditor](https://github.com/Vanessa219/vditor)，纯文本编辑基于 CodeMirror 6，搜索 / 快速打开 / Git / 历史快照等由 Rust 标准库实现，无额外依赖。
@@ -74,7 +85,6 @@ npm run tauri build -- --bundles nsis
 - 多光标编辑与更完整的 Vim 模式
 - 导出 Word / 长图
 - 主题 CSS 自定义文件
-- 多窗口
 
 想法和需求欢迎提 [Issue](https://github.com/th9017/md-editor/issues)。
 
@@ -84,6 +94,7 @@ npm run tauri build -- --bundles nsis
 
 - 报告问题时请带上系统版本、复现步骤和预期 / 实际表现
 - 提交代码建议先开 Issue 讨论方案，Fork 后建分支修改，PR 里说明改动了什么
+- **AI 辅助开发请先阅读 [AGENTS.md](AGENTS.md)**（仓库架构约定与修改规范）
 
 ## 📄 许可证
 

@@ -7,10 +7,26 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
 import { scheduleSave, store } from '../store'
+import { hljsStyle, isDarkTheme } from '../theme'
 import { createFolder, joinPath, writeBinaryFile } from '../tauri'
 import type { Heading, MdMode } from '../types'
 
 type VditorOptions = ConstructorParameters<typeof Vditor>[1]
+
+/** 精简工具栏：去掉录音 / 重复导出入口 / 帮助等噪音项 */
+const TOOLBAR = [
+  'headings', 'bold', 'italic', 'strike', 'link',
+  '|',
+  'list', 'ordered-list', 'check', 'outdent', 'indent',
+  '|',
+  'quote', 'code', 'inline-code', 'table',
+  '|',
+  'upload',
+  '|',
+  'undo', 'redo',
+  '|',
+  'edit-mode', 'fullscreen', 'more',
+]
 
 const props = defineProps<{ path: string; value: string; revision?: number }>()
 const emit = defineEmits<{ (e: 'update', value: string): void }>()
@@ -22,24 +38,24 @@ let headingEls: HTMLElement[] = []
 let spyRaf = 0
 let caretBlock: Element | null = null
 
-const isDarkTheme = (): boolean => store.theme === 'dark' || store.theme === 'ink'
-
 /** Vditor 不支持运行时改 mode/主题，切换时整体重建实例 */
 function build(mode: MdMode): void {
   vditor?.destroy()
   vditor = null
   if (!el.value) return
+  const dark = isDarkTheme(store.theme)
   vditor = new Vditor(el.value, {
     cdn: '/vditor',
     mode,
     value: props.value,
     lang: 'zh_CN',
     height: '100%',
-    theme: isDarkTheme() ? 'dark' : 'classic',
+    toolbar: TOOLBAR,
+    theme: dark ? 'dark' : 'classic',
     cache: { enable: false },
     preview: {
       math: { engine: 'KaTeX', inlineDigit: true },
-      hljs: { style: isDarkTheme() ? 'native' : 'github', lineNumber: false },
+      hljs: { style: hljsStyle(store.theme), lineNumber: false },
     },
     upload: {
       accept: 'image/*',
@@ -53,9 +69,8 @@ function build(mode: MdMode): void {
     },
     after: () => {
       // 装载内容主题 CSS：暗色主题下 .vditor-reset 需要浅色文字，否则文字与背景同色
-      const dark = isDarkTheme()
       try {
-        vditor?.setTheme(dark ? 'dark' : 'classic', dark ? 'dark' : 'light', dark ? 'native' : 'github')
+        vditor?.setTheme(dark ? 'dark' : 'classic', dark ? 'dark' : 'light', hljsStyle(store.theme))
       } catch {
         /* 内容主题加载失败时退回默认外观 */
       }

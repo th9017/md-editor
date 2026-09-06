@@ -159,6 +159,7 @@ import {
   renameEntry,
 } from './tauri'
 import { buildStandaloneHtml, printHtml } from './export'
+import { openFileInNewWindow } from './multiwindow'
 import type { FileNode, Heading } from './types'
 import TitleBar from './components/TitleBar.vue'
 import ActivityRail from './components/ActivityRail.vue'
@@ -374,6 +375,8 @@ provide('openTreeCtx', (x: number, y: number, node: FileNode) => {
       { label: '新建文件夹', action: () => startNewFolder(dir) },
       { sep: true },
     )
+  } else {
+    items.push({ label: '在新窗口打开', action: () => openFileInNewWindow(node.path) })
   }
   items.push(
     { label: '重命名', action: () => startRename(node) },
@@ -508,6 +511,7 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
     x,
     y,
     items: [
+      { label: '在新窗口打开', action: () => openFileInNewWindow(tab.path) },
       { label: '关闭', action: () => void closeTabSafe(tab.path) },
       { label: '关闭其他', action: () => void closeOthers() },
       { label: '关闭右侧', action: () => void closeRight() },
@@ -537,6 +541,15 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
 const commands = computed<CommandItem[]>(() => [
   { id: 'open-folder', label: '打开文件夹', keywords: 'folder open', run: () => void openFolder() },
   { id: 'quick-open', label: '快速打开文件…', keywords: 'goto ctrl p', run: () => (store.showQuickOpen = true) },
+  {
+    id: 'open-new-window',
+    label: '在新窗口打开当前文件',
+    keywords: 'new window',
+    run: () => {
+      if (store.active) openFileInNewWindow(store.active.path)
+      else notify('先打开一个文件')
+    },
+  },
   { id: 'find', label: '查找 / 替换…', keywords: 'search replace ctrl f', run: openFind },
   { id: 'new-file', label: '新建文件', keywords: 'new file', run: () => startNewFile(store.root || '') },
   { id: 'new-folder', label: '新建文件夹', keywords: 'new folder', run: () => startNewFolder(store.root || '') },
@@ -604,6 +617,9 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('focus', onWindowFocus)
   pollTimer = setInterval(() => void pollExternalChanges(), 3000)
+  // 多窗口：?file= 启动参数 → 以文件所在目录为工作区，单标签打开
+  const bootFile = new URLSearchParams(window.location.search).get('file')
+  if (bootFile) void openRecentFile(bootFile)
 })
 
 onBeforeUnmount(() => {

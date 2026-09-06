@@ -3,21 +3,25 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { EditorView, keymap } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { basicSetup } from 'codemirror'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { indentWithTab } from '@codemirror/commands'
+import { cmDark } from '../theme'
 import { store, scheduleSave } from '../store'
 
-const props = defineProps<{ path: string; value: string }>()
+const props = defineProps<{ path: string; value: string; revision?: number }>()
 const emit = defineEmits<{ (e: 'update', value: string): void }>()
 
 const host = ref<HTMLDivElement>()
 let view: EditorView | null = null
 
-onMounted(() => {
+function build(): void {
+  view?.destroy()
+  view = null
+  if (!host.value) return
   const extensions = [
     basicSetup,
     keymap.of([indentWithTab]),
@@ -32,12 +36,21 @@ onMounted(() => {
       '.cm-scroller': { fontFamily: 'Consolas, "Courier New", monospace' },
     }),
   ]
-  if (store.theme === 'dark') extensions.push(oneDark)
+  if (cmDark(store.theme)) extensions.push(oneDark)
   view = new EditorView({
     state: EditorState.create({ doc: props.value, extensions }),
-    parent: host.value!,
+    parent: host.value,
   })
-})
+}
+
+onMounted(build)
+watch(() => store.theme, build)
+watch(
+  () => props.revision,
+  () => {
+    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.value } })
+  },
+)
 
 onBeforeUnmount(() => {
   view?.destroy()

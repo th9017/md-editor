@@ -63,6 +63,14 @@ fn skip_dir_name(name: &str) -> bool {
 }
 
 fn app_data_dir() -> Option<PathBuf> {
+    // 便携模式：exe 同目录存在 portable.flag 时，数据随程序目录走
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("portable.flag").exists() {
+                return Some(dir.join("mdtex-data"));
+            }
+        }
+    }
     let la = std::env::var("LOCALAPPDATA").ok()?;
     Some(PathBuf::from(la).join("mdtex-editor"))
 }
