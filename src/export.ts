@@ -1,4 +1,5 @@
 /** Markdown 导出：单文件 HTML（内联样式与 KaTeX 资源）与 PDF 打印 */
+import { readFile } from '@tauri-apps/plugin-fs'
 
 const DOC_CSS = `
   body { margin: 0; background: #fff; color: #1f2328; }
@@ -140,4 +141,43 @@ export async function printHtml(html: string): Promise<void> {
 /** 生成「全部替换」用的正则（大小写不敏感） */
 export function replaceAllInsensitive(text: string, from: string, to: string): string {
   return text.replace(new RegExp(escapeRegExp(from), 'gi'), () => to)
+}
+
+/** 把 HTML 里相对路径的图片读出并内联为 base64（单文件导出真正离线可用） */
+export async function inlineWorkspaceImages(html: string, root: string): Promise<string> {
+  const srcs = [...html.matchAll(/<img[^>]+src="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((s) => !/^(https?:|data:|blob:|asset:)/i.test(s) && s.trim() !== '')
+  const map = new Map<string, string>()
+  await Promise.all(
+    [...new Set(srcs)].map(async (rel) => {
+      try {
+        let decoded = rel
+        try {
+          decoded = decodeURIComponent(rel)
+        } catch {
+          /* 保留原样 */
+        }
+        const abs = decoded.startsWith('\\') || /^[a-zA-Z]:/.test(decoded) ? decoded : joinDir(root, decoded)
+        const bytes = new Uint8Array(await readFile(abs))
+        let bin = ''
+        const chunk = 0x8000
+        for (let i = 0; i < bytes.length; i += chunk) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+        }
+        const ext = decoded.split('.').pop()?.toLowerCase() ?? 'png'
+        const mime = ext === 'jpg' ? 'image/jpeg' : ext === 'svg' ? 'image/svg+xml' : `image/${ext}`
+        map.set(rel, `data:${mime};base64,${btoa(bin)}`)
+      } catch {
+        /* 读不到的图片保持原样 */
+      }
+    }),
+  )
+  return html.replace(/(<img[^>]+src=")([^"]+)(")/g, (m, pre, src, post) =>
+    map.has(src) ? pre + map.get(src) + post : m,
+  )
+}
+
+function joinDir(dir: string, name: string): string {
+  return dir.endsWith('\\') || dir.endsWith('/') ? dir + name : dir + '\\' + name
 }

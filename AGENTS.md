@@ -66,6 +66,8 @@ cd src-tauri && cargo check   # Rust 类型检查，必须零错误
 9. **flex 容器中的编辑器高度**：根元素用 `flex: 1; min-height: 0`，不要用 `height: 100%`
 10. **多窗口同文件**：编辑冲突不做实时协同，依赖 mtime 轮询 + 「重新加载 / 保留我的版本」横幅，不要引入文件锁
 11. **GUI 派生控制台子进程必须加 CREATE_NO_WINDOW**（`std::os::windows::process::CommandExt::creation_flags(0x0800_0000)`）：release 构建是 GUI 子系统，git 等控制台程序每次被调用都会弹终端窗口并抢焦点，进而触发 focus 刷新形成无限弹窗循环；debug 构建有控制台不会暴露此问题
+12. **工作区相对路径的图片在 WebView 里默认 404**：`<img src="assets/x.png">` 相对的是应用自身地址而非磁盘。渲染层用 `convertFileSrc`（需 tauri.conf 的 assetProtocol）映射为绝对路径，且只改渲染 DOM——编辑器序列化会把 DOM src 写回源码，必须在 input 回调里把 asset 地址反解回相对路径（见 MarkdownEditor 的 `fixupImgs` / `deCorruptAssetUrls`）；导出用 `getHtmlPortable` + `inlineWorkspaceImages` 保证可移植
+13. **打字机模式要用「选区几何 + 最近可滚动祖先」实现**：基于 .vditor-reset 块级元素的方案在分屏模式（源码编辑器非 contenteditable）失效，且同块内连续打字不触发
 
 ## 6. 版本与发布流程
 

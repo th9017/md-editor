@@ -158,7 +158,7 @@ import {
   readDirShallow,
   renameEntry,
 } from './tauri'
-import { buildStandaloneHtml, printHtml } from './export'
+import { buildStandaloneHtml, inlineWorkspaceImages, printHtml } from './export'
 import { openFileInNewWindow } from './multiwindow'
 import type { FileNode, Heading } from './types'
 import TitleBar from './components/TitleBar.vue'
@@ -188,7 +188,7 @@ interface CtxItem {
 
 const treeRef = ref<InstanceType<typeof FileTree>>()
 const mdApi = ref<{
-  getHtml: () => string
+  getHtmlPortable: () => string
   refreshValue: () => void
   jumpTo: (h: Heading) => void
 } | null>(null)
@@ -280,12 +280,19 @@ function openFind(): void {
 async function currentHtml(): Promise<string | null> {
   const tab = store.active
   if (!tab || tab.kind !== 'md') return null
-  const html = mdApi.value?.getHtml() ?? ''
-  if (!html.trim()) {
+  const body = mdApi.value?.getHtmlPortable() ?? ''
+  if (!body.trim()) {
     notify('未能获取渲染内容')
     return null
   }
-  return await buildStandaloneHtml(tab.name.replace(/\.(md|markdown)$/i, ''), html)
+  try {
+    const inlined = await inlineWorkspaceImages(body, store.root)
+    return await buildStandaloneHtml(tab.name.replace(/\.(md|markdown)$/i, ''), inlined)
+  } catch (e) {
+    store.logs = `导出失败：${e}`
+    store.logVisible = true
+    return null
+  }
 }
 
 async function doExport(kind: 'html' | 'pdf' | 'copy'): Promise<void> {

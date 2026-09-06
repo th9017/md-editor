@@ -6,12 +6,16 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { scheduleSave, store } from '../store'
 import { hljsStyle, isDarkTheme } from '../theme'
 import { createFolder, joinPath, writeBinaryFile } from '../tauri'
 import type { Heading, MdMode } from '../types'
 
 type VditorOptions = ConstructorParameters<typeof Vditor>[1]
+
+const props = defineProps<{ path: string; value: string; revision?: number }>()
+const emit = defineEmits<{ (e: 'update', value: string): void }>()
 
 /** 精简工具栏：去掉录音 / 重复导出入口 / 帮助等噪音项 */
 const TOOLBAR = [
@@ -28,22 +32,23 @@ const TOOLBAR = [
   'edit-mode', 'fullscreen', 'more',
 ]
 
-const props = defineProps<{ path: string; value: string; revision?: number }>()
-const emit = defineEmits<{ (e: 'update', value: string): void }>()
-
 const el = ref<HTMLDivElement>()
 let vditor: Vditor | null = null
 let scrollContainer: HTMLElement | null = null
 let headingEls: HTMLElement[] = []
 let spyRaf = 0
-let caretBlock: Element | null = null
+let typewriterRaf = 0
+let fixupRaf = 0
+let imgObserver: MutationObserver | null = null
+
+const dark = (): boolean => isDarkTheme(store.theme)
 
 /** Vditor 不支持运行时改 mode/主题，切换时整体重建实例 */
 function build(mode: MdMode): void {
   vditor?.destroy()
   vditor = null
   if (!el.value) return
-  const dark = isDarkTheme(store.theme)
+  const d = dark()
   vditor = new Vditor(el.value, {
     cdn: '/vditor',
     mode,
@@ -51,7 +56,7 @@ function build(mode: MdMode): void {
     lang: 'zh_CN',
     height: '100%',
     toolbar: TOOLBAR,
-    theme: dark ? 'dark' : 'classic',
+    theme: d ? 'dark' : 'classic',
     cache: { enable: false },
     preview: {
       math: { engine: 'KaTeX', inlineDigit: true },
@@ -62,22 +67,83 @@ function build(mode: MdMode): void {
       handler: (files: File[]) => handleImageUpload(files),
     },
     input: (value: string) => {
-      emit('update', value)
+      emit('update', deCorruptAssetUrls(value))
       scheduleSave()
       parseOutlineSoon(value)
       onCaretActivity()
+      queueFixup()
     },
     after: () => {
       // 装载内容主题 CSS：暗色主题下 .vditor-reset 需要浅色文字，否则文字与背景同色
       try {
-        vditor?.setTheme(dark ? 'dark' : 'classic', dark ? 'dark' : 'light', hljsStyle(store.theme))
+        vditor?.setTheme(d ? 'dark' : 'classic', d ? 'dark' : 'light', hljsStyle(store.theme))
       } catch {
         /* 内容主题加载失败时退回默认外观 */
       }
       parseOutlineSoon(props.value)
       setupScrollSpy()
+      setupImgFixup()
+      fixupImgs()
     },
   } as VditorOptions)
+}
+
+// ---------- 图片路径：工作区相对路径 → asset 协议（仅渲染层，不污染源码） ----------
+
+function isRelativeSrc(src: string): boolean {
+  return !/^(https?:|data:|blob:|asset:|http:\/\/asset\.)/i.test(src) && src.trim() !== ''
+}
+
+/** 把渲染 DOM 里相对路径的 <img> 映射为磁盘文件（asset 协议），原始相对路径存 data-rel-src */
+function fixupImgs(): void {
+  if (!el.value || !store.root) return
+  el.value.querySelectorAll<HTMLImageElement>('img:not([data-rel-src])').forEach((img) => {
+    const src = img.getAttribute('src') ?? ''
+    if (!isRelativeSrc(src)) return
+    let decoded = src
+    try {
+      decoded = decodeURIComponent(src)
+    } catch {
+      /* 保留原样 */
+    }
+    img.dataset.relSrc = src
+    img.src = convertFileSrc(joinPath(store.root, decoded))
+  })
+}
+
+/** 在组件根上挂观察器：预览重渲染 / 图片插入等任何 DOM 变化都会触发一次 fixup */
+function setupImgFixup(): void {
+  imgObserver?.disconnect()
+  if (!el.value) return
+  imgObserver = new MutationObserver(() => queueFixup())
+  imgObserver.observe(el.value, { childList: true, subtree: true })
+  fixupImgs()
+}
+
+function queueFixup(): void {
+  cancelAnimationFrame(fixupRaf)
+  fixupRaf = requestAnimationFrame(fixupImgs)
+}
+
+/** 编辑器序列化出的内容里可能混入 asset 协议地址，转回相对路径再入库 */
+function deCorruptAssetUrls(value: string): string {
+  if (!store.root) return value
+  return value.replace(/https?:\/\/asset\.localhost\/[^\s)"'<>\\]+/g, (m) => {
+    try {
+      const abs = decodeURIComponent(m.replace(/^https?:\/\/asset\.localhost\//, ''))
+      return relPathForward(abs)
+    } catch {
+      return m
+    }
+  })
+}
+
+function relPathForward(abs: string): string {
+  const root = store.root.replaceAll('/', '\\')
+  const a = abs.replaceAll('/', '\\')
+  const prefix = root.endsWith('\\') ? root : root + '\\'
+  const rel = a.startsWith(prefix) ? a.slice(prefix.length) : a
+  return rel.replaceAll('\\', '/')
 }
 
 // ---------- 图片粘贴 / 拖拽 ----------
@@ -152,7 +218,7 @@ function parseOutline(content: string): void {
   store.outline = headings
 }
 
-/** 收集编辑器/预览 DOM 中的标题元素，并挂 IntersectionObserver 滚动联动 */
+/** 收集编辑器/预览 DOM 中的标题元素，并挂 scroll 事件做滚动联动 */
 function setupScrollSpy(): void {
   if (!el.value) return
   headingEls = [...el.value.querySelectorAll('.vditor-reset :is(h1,h2,h3,h4,h5,h6)')] as HTMLElement[]
@@ -169,13 +235,12 @@ function findScrollContainer(): HTMLElement | null {
   const candidates = el.value.querySelectorAll<HTMLElement>('.vditor-sv, .vditor-ir, .vditor-wysiwyg, .vditor-preview')
   for (const c of candidates) {
     const overflow = getComputedStyle(c).overflowY
-    if (overflow === 'auto' || overflow === 'scroll') return c
-    const inner = c.querySelector<HTMLElement>('[style*="overflow"], .vditor-reset')
-    if (inner) {
-      const p = inner.parentElement
-      if (p) {
-        const po = getComputedStyle(p).overflowY
-        if (po === 'auto' || po === 'scroll') return p
+    if ((overflow === 'auto' || overflow === 'scroll') && c.scrollHeight > c.clientHeight) return c
+    const inner = c.querySelector<HTMLElement>('.vditor-reset')
+    if (inner?.parentElement) {
+      const po = getComputedStyle(inner.parentElement).overflowY
+      if ((po === 'auto' || po === 'scroll') && inner.parentElement.scrollHeight > inner.parentElement.clientHeight) {
+        return inner.parentElement
       }
     }
   }
@@ -211,7 +276,7 @@ function jumpTo(heading: Heading): void {
     store.activeHeading = String(heading.line)
     return
   }
-  // DOM 中没找到（如 sv 模式源码侧）则滚动到源码对应行： approximation via scroll container top ratio
+  // DOM 中没找到（如 sv 模式源码侧）则按行号比例滚动
   if (scrollContainer) {
     const lines = props.value.split('\n').length
     const ratio = Math.min(1, Math.max(0, (heading.line - 1) / Math.max(1, lines)))
@@ -221,23 +286,50 @@ function jumpTo(heading: Heading): void {
 
 // ---------- 打字机 / 专注模式 ----------
 
+/**
+ * 打字机：把光标所在位置滚动到可视区垂直居中。
+ * 用选区矩形 + 最近可滚动祖先实现，对所见即所得 / 即时渲染 / 分屏源码三种模式通用。
+ */
+function scrollCaretToCenter(): void {
+  const sel = window.getSelection()
+  if (!sel || !sel.rangeCount) return
+  const rect = sel.getRangeAt(0).getBoundingClientRect()
+  if (rect.height === 0 && rect.top === 0) return
+  let node: HTMLElement | null =
+    sel.anchorNode instanceof HTMLElement
+      ? sel.anchorNode
+      : sel.anchorNode?.parentElement ?? null
+  let scroller: HTMLElement | null = null
+  while (node && node !== document.body) {
+    const oy = getComputedStyle(node).overflowY
+    if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight) {
+      scroller = node
+      break
+    }
+    node = node.parentElement
+  }
+  if (!scroller) return
+  const box = scroller.getBoundingClientRect()
+  const delta = rect.top + rect.height / 2 - (box.top + box.height / 2)
+  if (Math.abs(delta) > 2) scroller.scrollTop += delta
+}
+
 function onCaretActivity(): void {
-  if (!store.typewriter && !store.focusMode) return
-  const block = caretBlockEl()
-  if (!block) return
-  if (store.focusMode) {
+  const block = focusBlockEl()
+  if (block && store.focusMode) {
     el.value?.querySelectorAll('.vditor-reset .vditor-focus').forEach((n) => {
       if (n !== block) n.classList.remove('vditor-focus')
     })
     block.classList.add('vditor-focus')
   }
-  if (store.typewriter && block !== caretBlock) {
-    caretBlock = block
-    block.scrollIntoView({ block: 'center', behavior: 'auto' })
+  if (store.typewriter) {
+    cancelAnimationFrame(typewriterRaf)
+    typewriterRaf = requestAnimationFrame(scrollCaretToCenter)
   }
 }
 
-function caretBlockEl(): HTMLElement | null {
+/** 光标所在块（.vditor-reset 的直接子元素），所见即所得 / 即时渲染用 */
+function focusBlockEl(): HTMLElement | null {
   const sel = window.getSelection()
   if (!sel || !sel.anchorNode) return null
   let node: Node | null = sel.anchorNode
@@ -250,15 +342,25 @@ function caretBlockEl(): HTMLElement | null {
 // ---------- 对外能力（导出 / 外部内容刷新） ----------
 
 defineExpose({
-  /** 当前文档的渲染 HTML（导出用） */
-  getHtml: (): string => {
+  /** 当前文档的渲染 HTML（导出用）：临时把图片 src 换回相对路径，保证导出文件可移植 */
+  getHtmlPortable: (): string => {
+    if (!vditor || !el.value) return ''
+    const imgs = [...el.value.querySelectorAll<HTMLImageElement>('img[data-rel-src]')]
+    const saved = imgs.map((i) => ({ el: i, cur: i.src, rel: i.dataset.relSrc ?? '' }))
+    saved.forEach((s) => {
+      if (s.rel) s.el.src = s.rel
+    })
     try {
-      return vditor?.getHTML() ?? ''
+      return vditor.getHTML()
     } catch {
       return ''
+    } finally {
+      saved.forEach((s) => {
+        if (s.rel) s.el.src = s.cur
+      })
     }
   },
-  /** 程序性替换内容后刷新编辑器显示（查找替换/外部重载） */
+  /** 程序性替换内容后刷新编辑器显示（查找替换 / 外部重载） */
   refreshValue: (): void => {
     if (vditor) vditor.setValue(props.value)
     parseOutlineSoon(props.value)
@@ -277,15 +379,20 @@ watch(
     if (vditor) vditor.setValue(props.value)
     parseOutlineSoon(props.value)
     setupScrollSpy()
+    fixupImgs()
   },
 )
 watch(() => props.path, () => {
-  caretBlock = null
+  /* 切换文件时光标状态随重建自动重置 */
 })
 
 onBeforeUnmount(() => {
   clearTimeout(outlineTimer)
   cancelAnimationFrame(spyRaf)
+  cancelAnimationFrame(typewriterRaf)
+  cancelAnimationFrame(fixupRaf)
+  imgObserver?.disconnect()
+  imgObserver = null
   scrollContainer?.removeEventListener('scroll', onScroll)
   vditor?.destroy()
   vditor = null
