@@ -209,12 +209,31 @@ const GIT_ALLOW: &[&str] = &[
     "diff",
 ];
 
-fn run_git(repo: &str, args: &[String]) -> GitOut {
-    let out = Command::new("git")
+/// 派生 git 子进程。Windows 下 GUI 子系统派生控制台程序会弹出终端窗口，
+/// 必须显式加 CREATE_NO_WINDOW；开发模式（debug，控制台子系统）不受影响。
+#[cfg(target_os = "windows")]
+fn spawn_git(repo: &str, args: &[String]) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new("git")
         .args(args)
         .current_dir(repo)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_git(repo: &str, args: &[String]) -> std::io::Result<std::process::Output> {
+    Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+}
+
+fn run_git(repo: &str, args: &[String]) -> GitOut {
+    let out = spawn_git(repo, args);
     match out {
         Ok(o) => GitOut {
             code: o.status.code().unwrap_or(-1),

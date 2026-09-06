@@ -1,6 +1,6 @@
 [package]
 name = "mdtex"
-version = "0.4.0"
+version = "0.4.1"
 description = "本地轻量 Markdown 编辑器"
 authors = ["jiang"]
 edition = "2021"

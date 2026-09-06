@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-09-06
+
+### 修复
+
+- 打开 Git 仓库后反复弹出终端窗口的问题：release 构建为 GUI 子系统，派生 git 子进程时未加 `CREATE_NO_WINDOW`，控制台窗口抢焦点又触发状态刷新，形成无限弹窗循环
+
 ## [0.4.0] - 2026-09-06
 
 ### 新增

@@ -6,7 +6,7 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10_11-0078D6?logo=windows11&logoColor=white)
-![Version](https://img.shields.io/badge/Version-0.4.0-blue)
+![Version](https://img.shields.io/badge/Version-0.4.1-blue)
 
 ## 📷 截图
 

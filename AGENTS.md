@@ -65,6 +65,7 @@ cd src-tauri && cargo check   # Rust 类型检查，必须零错误
 8. **中文路径**：文件名含中文是常态，Rust 端 `to_string_lossy`、前端 `encodeURIComponent` 都要留意
 9. **flex 容器中的编辑器高度**：根元素用 `flex: 1; min-height: 0`，不要用 `height: 100%`
 10. **多窗口同文件**：编辑冲突不做实时协同，依赖 mtime 轮询 + 「重新加载 / 保留我的版本」横幅，不要引入文件锁
+11. **GUI 派生控制台子进程必须加 CREATE_NO_WINDOW**（`std::os::windows::process::CommandExt::creation_flags(0x0800_0000)`）：release 构建是 GUI 子系统，git 等控制台程序每次被调用都会弹终端窗口并抢焦点，进而触发 focus 刷新形成无限弹窗循环；debug 构建有控制台不会暴露此问题
 
 ## 6. 版本与发布流程
 
