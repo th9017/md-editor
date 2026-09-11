@@ -6,7 +6,7 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10_11-0078D6?logo=windows11&logoColor=white)
-![Version](https://img.shields.io/badge/Version-0.4.2-blue)
+![Version](https://img.shields.io/badge/Version-0.4.4-blue)
 
 ## ✨ 功能特性
 
@@ -22,6 +22,7 @@
 
 **文件**
 
+- **新建文档**：欢迎页一键开写或 Ctrl+N，无需先打开文件夹或已有文件；未命名文档首次保存（Ctrl+S）时弹「另存为」询问保存位置与文件名
 - **文件树 + 多标签页**：打开本地文件夹，支持新建 / 重命名 / 删除，目录懒加载；.txt 等纯文本也能直接编辑
 - **快速打开**：Ctrl+P 按文件名模糊搜索直达
 - **全文搜索**：整个工作区按内容搜索，关键词高亮
@@ -48,7 +49,7 @@
 
 系统要求：Windows 10 / 11（依赖 WebView2 运行时，一般系统已内置）；Git 集成功能需系统安装 [Git](https://git-scm.com/)。
 
-装好后可以「打开文件夹」选择仓库里的 `examples/` 目录，其中 `示例文档.md` 覆盖了常用语法和公式，用来快速上手。
+装好后可以「打开文件夹」选择仓库里的 `examples/` 目录，其中 `示例文档.md` 覆盖了常用语法和公式，用来快速上手；也可以在欢迎页直接点「📝 新建文档」开写，无需先打开文件夹。
 
 ## 🛠 从源码构建
 

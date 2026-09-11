@@ -12,7 +12,16 @@ import type {
   Tab,
   ThemeId,
 } from './types'
-import { baseName, fileMtimes, gitStatus, kindOf, saveSnapshot } from './tauri'
+import {
+  baseName,
+  fileMtimes,
+  gitStatus,
+  kindOf,
+  parentDir,
+  pickSaveFile,
+  readDirShallow,
+  saveSnapshot,
+} from './tauri'
 
 type Theme = ThemeId
 
@@ -141,15 +150,102 @@ export async function closeTabSafe(path: string): Promise<void> {
         cancelLabel: '丢弃',
       },
     )
-    if (save) await saveTab(tab)
+    if (save) {
+      const saved = await saveTab(tab)
+      if (!saved) return // 用户在保存对话框点了取消 → 不关闭，保留内容
+    }
   }
   await closeTab(path)
 }
 
+// ---------- 未命名文档 ----------
+
+const UNTITLED_PREFIX = 'untitled:'
+
+/** 是否为「未命名文档」（尚未落盘，path 是内存伪路径；Windows 文件名不允许冒号，不会与真实文件撞名） */
+export function isUntitled(path: string): boolean {
+  return path.startsWith(UNTITLED_PREFIX)
+}
+
+/** 新建未命名文档：不落盘，首次保存（Ctrl+S）时再询问位置与文件名 */
+export function newUntitledDoc(): void {
+  const used = new Set(
+    store.tabs
+      .filter((t) => isUntitled(t.path))
+      .map((t) => Number(t.path.slice(UNTITLED_PREFIX.length))),
+  )
+  let n = 1
+  while (used.has(n)) n += 1
+  const path = UNTITLED_PREFIX + n
+  store.tabs.push({
+    path,
+    name: n === 1 ? '未命名.md' : `未命名-${n}.md`,
+    kind: 'md',
+    content: '',
+    savedContent: '',
+    mtime: null,
+    externalChanged: false,
+  })
+  store.activePath = path
+}
+
 // ---------- 保存 ----------
 
-export async function saveTab(tab: Tab): Promise<void> {
-  if (tab.content === tab.savedContent) return
+const SAVE_FILTERS = [
+  { name: 'Markdown', extensions: ['md', 'markdown'] },
+  { name: '文本文件', extensions: ['txt'] },
+  { name: '所有文件', extensions: ['*'] },
+]
+
+/** 未命名文档首存：弹系统对话框询问保存位置与文件名；取消返回 false（内容不落盘） */
+async function saveTabAs(tab: Tab): Promise<boolean> {
+  const target = await pickSaveFile(tab.name, SAVE_FILTERS)
+  if (!target) return false
+  // 目标路径若已被其他标签打开：内容干净则让其让位，有未保存更改则中止
+  const existing = store.tabs.find((t) => t.path === target && t !== tab)
+  if (existing) {
+    if (existing.content !== existing.savedContent) {
+      store.logs = `「${existing.name}」已在其他标签打开且有未保存更改，已取消覆盖保存`
+      store.logVisible = true
+      return false
+    }
+    await closeTab(target)
+  }
+  const oldPath = tab.path
+  await writeTextFile(target, tab.content)
+  tab.path = target
+  tab.name = baseName(target)
+  // 标签身份由伪路径换成真实路径，活动标签指针必须跟着改，否则编辑区会退回欢迎页
+  if (store.activePath === oldPath) store.activePath = target
+  const kind = kindOf(target)
+  if (kind !== 'other') tab.kind = kind
+  tab.savedContent = tab.content
+  // 取写入后的真实 mtime，作为外部修改检测的基线
+  fileMtimes([target])
+    .then((m) => {
+      const t = m[target]
+      if (t != null) tab.mtime = t
+    })
+    .catch(() => {})
+  addRecentFile(target)
+  // 之前没打开工作区时，把保存位置设为工作区（与按文件打开多窗口时的行为一致）
+  if (!store.root) {
+    store.root = parentDir(target)
+    try {
+      store.tree = await readDirShallow(store.root)
+    } catch {
+      /* 目录读不到就不填充文件树 */
+    }
+    addRecentFolder(store.root)
+    refreshGit().catch(() => {})
+  }
+  return true
+}
+
+export async function saveTab(tab: Tab): Promise<boolean> {
+  if (tab.content === tab.savedContent) return true
+  // 未命名文档首次保存：先询问位置与文件名，取消则保持未保存状态
+  if (isUntitled(tab.path)) return await saveTabAs(tab)
   // 保存前留一份旧版快照（本地历史），失败不阻塞保存
   if (tab.savedContent) {
     try {
@@ -167,11 +263,13 @@ export async function saveTab(tab: Tab): Promise<void> {
       if (t != null) tab.mtime = t
     })
     .catch(() => {})
+  return true
 }
 
-export async function saveActive(): Promise<void> {
+export async function saveActive(): Promise<boolean> {
   const t = store.active
-  if (t) await saveTab(t)
+  if (!t) return true
+  return await saveTab(t)
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined
@@ -189,6 +287,8 @@ function scheduleGitRefresh(): void {
 /** 输入防抖自动保存 */
 export function scheduleSave(delay = 1200): void {
   if (!store.autoSave) return
+  // 未命名文档不自动保存：首次落盘需询问位置，自动弹对话框会打断输入
+  if (store.active && isUntitled(store.active.path)) return
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveActive()

@@ -54,7 +54,10 @@
             <div v-if="!store.active" class="welcome">
               <h1>MD 编辑器</h1>
               <p>本地轻量的 Markdown 写作工具</p>
-              <button class="primary big" @click="openFolder">📂 打开文件夹开始</button>
+              <div class="welcome-actions">
+                <button class="primary big" @click="newUntitledDoc">📝 新建文档</button>
+                <button class="outline big" @click="openFolder">📂 打开文件夹</button>
+              </div>
               <ul>
                 <li>分屏预览 / 即时渲染 / 所见即所得一键切换，KaTeX 公式渲染</li>
                 <li>粘贴截图直接存图，大纲、全文搜索、Git 一应俱全</li>
@@ -134,6 +137,8 @@ import {
   addRecentFolder,
   closeTab,
   closeTabSafe,
+  isUntitled,
+  newUntitledDoc,
   openTab,
   refreshGit,
   saveActive,
@@ -326,7 +331,10 @@ async function doExport(kind: 'html' | 'pdf' | 'copy'): Promise<void> {
 let pollTimer: ReturnType<typeof setInterval> | undefined
 
 async function pollExternalChanges(): Promise<void> {
-  const textTabs = store.tabs.filter((t) => t.kind === 'md' || t.kind === 'text')
+  // 未命名文档没有磁盘路径，不参与 mtime 轮询（否则会误报外部修改）
+  const textTabs = store.tabs.filter(
+    (t) => (t.kind === 'md' || t.kind === 'text') && !isUntitled(t.path),
+  )
   if (!textTabs.length) return
   try {
     const mt = await fileMtimes(textTabs.map((t) => t.path))
@@ -514,14 +522,17 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
   const closeRight = async () => {
     for (const t of [...store.tabs].slice(idx + 1)) await closeTabSafe(t.path)
   }
-  ctx.value = {
-    x,
-    y,
-    items: [
-      { label: '在新窗口打开', action: () => openFileInNewWindow(tab.path) },
-      { label: '关闭', action: () => void closeTabSafe(tab.path) },
-      { label: '关闭其他', action: () => void closeOthers() },
-      { label: '关闭右侧', action: () => void closeRight() },
+  // 未命名文档没有磁盘路径，隐藏依赖真实路径的菜单项
+  const untitled = isUntitled(tab.path)
+  const items: CtxItem[] = []
+  if (!untitled) items.push({ label: '在新窗口打开', action: () => openFileInNewWindow(tab.path) })
+  items.push(
+    { label: '关闭', action: () => void closeTabSafe(tab.path) },
+    { label: '关闭其他', action: () => void closeOthers() },
+    { label: '关闭右侧', action: () => void closeRight() },
+  )
+  if (!untitled) {
+    items.push(
       { sep: true },
       {
         label: '复制文件路径',
@@ -539,8 +550,9 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
           })
         },
       },
-    ],
+    )
   }
+  ctx.value = { x, y, items }
 }
 
 // ---------- 命令面板 ----------
@@ -558,7 +570,9 @@ const commands = computed<CommandItem[]>(() => [
     },
   },
   { id: 'find', label: '查找 / 替换…', keywords: 'search replace ctrl f', run: openFind },
-  { id: 'new-file', label: '新建文件', keywords: 'new file', run: () => startNewFile(store.root || '') },
+  { id: 'new-doc', label: '新建文档（保存时选择位置）', keywords: 'new document ctrl n', run: () => newUntitledDoc() },
+  // 未打开工作区时「新建文件」无处落盘，转为新建未命名文档
+  { id: 'new-file', label: '新建文件', keywords: 'new file', run: () => (store.root ? startNewFile(store.root) : newUntitledDoc()) },
   { id: 'new-folder', label: '新建文件夹', keywords: 'new folder', run: () => startNewFolder(store.root || '') },
   { id: 'mode-wysiwyg', label: '切换到所见即所得', run: () => setMdMode('wysiwyg') },
   { id: 'mode-ir', label: '切换到即时渲染', run: () => setMdMode('ir') },
@@ -600,10 +614,15 @@ function onKeydown(e: KeyboardEvent): void {
       store.showFindBar = true
     }
     // 文本文件交给 CodeMirror 内置搜索
+  } else if (mod && e.key.toLowerCase() === 'n') {
+    e.preventDefault()
+    newUntitledDoc()
   } else if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault()
     saveActive()
-      .then(() => notify('✔ 已保存'))
+      .then((saved) => {
+        if (saved) notify('✔ 已保存')
+      })
       .catch((err) => {
         store.logs = `保存失败：${err}`
         store.logVisible = true
@@ -717,6 +736,11 @@ onBeforeUnmount(() => {
 .big {
   font-size: 15px;
   padding: 8px 20px;
+}
+
+.welcome-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .spacer {
