@@ -146,8 +146,8 @@ export const store = reactive({
   activePath: '',
   // 侧栏视图
   sidebarView: loadFlag<SidebarView>('mdtex.sidebarView', 'files'),
-  // Markdown 编辑
-  mdMode: loadFlag<MdMode>('mdtex.mdMode', 'sv'),
+  // Markdown 编辑（默认所见即所得；仅在设置里切换过的用户保留自己的选择）
+  mdMode: loadFlag<MdMode>('mdtex.mdMode', 'wysiwyg'),
   // 外观设置
   theme: loadFlag<Theme>('mdtex.theme', 'light'),
   accent: localStorage.getItem('mdtex.accent') || '',

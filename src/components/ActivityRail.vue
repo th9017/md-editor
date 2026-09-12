@@ -5,7 +5,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'files' }"
       title="文件"
-      @click="setSidebarView('files')"
+      @click="onRail('files')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -16,7 +16,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'search' }"
       title="搜索"
-      @click="setSidebarView('search')"
+      @click="onRail('search')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <circle cx="11" cy="11" r="7" />
@@ -28,7 +28,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'git' }"
       title="Git"
-      @click="setSidebarView('git')"
+      @click="onRail('git')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="6" cy="5" r="2.2" />
@@ -43,7 +43,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'outline' }"
       title="大纲"
-      @click="setSidebarView('outline')"
+      @click="onRail('outline')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <line x1="9" y1="6" x2="20" y2="6" />
@@ -59,7 +59,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'recent' }"
       title="最近"
-      @click="setSidebarView('recent')"
+      @click="onRail('recent')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="8.5" />
@@ -71,7 +71,7 @@
       class="rail-btn"
       :class="{ active: store.sidebarView === 'settings' }"
       title="设置"
-      @click="setSidebarView('settings')"
+      @click="onRail('settings')"
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3" />
@@ -82,7 +82,14 @@
 </template>
 
 <script setup lang="ts">
-import { setSidebarView, store } from '../store'
+import { setSidebarView, store, toggleSidebarCollapsed } from '../store'
+import type { SidebarView } from '../types'
+
+/** 点当前激活视图图标 = 收起/展开侧栏；点其他图标 = 切换视图（并自动展开） */
+function onRail(v: SidebarView): void {
+  if (store.sidebarView === v) toggleSidebarCollapsed()
+  else setSidebarView(v)
+}
 </script>
 
 <style scoped>

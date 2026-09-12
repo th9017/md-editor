@@ -93,6 +93,11 @@ function build(mode: MdMode): void {
       setupCaretListeners(mode)
       setupImgFixup()
       fixupImgs()
+      // 打字机开关已开时（新建 / 切文件 / 切模式重建），把光标行立即居中；稍后重试一次防渲染未稳
+      if (store.typewriter) {
+        centerCaretSoon()
+        setTimeout(() => centerCaretSoon(), 150)
+      }
     },
   } as VditorOptions)
 }
@@ -362,16 +367,16 @@ function caretInEditingEl(): boolean {
 }
 
 /** 打字机：把光标所在位置滚动到可视区垂直居中，按编辑形态分两条测量路径 */
-function scrollCaretToCenter(): void {
+function scrollCaretToCenter(smooth = false): void {
   if (!caretInEditingEl()) return
   const target = editingEl
   if (!target) return
-  if (target instanceof HTMLTextAreaElement) scrollTextareaCaretToCenter(target)
-  else scrollSelectionToCenter()
+  if (target instanceof HTMLTextAreaElement) scrollTextareaCaretToCenter(target, smooth)
+  else scrollSelectionToCenter(smooth)
 }
 
 /** sv 模式：textarea 光标几何不可得，用同款样式的隐藏镜像 div 折算光标纵坐标 */
-function scrollTextareaCaretToCenter(textarea: HTMLTextAreaElement): void {
+function scrollTextareaCaretToCenter(textarea: HTMLTextAreaElement, smooth = false): void {
   if (textarea.clientWidth === 0) return
   const mirror = ensureMirrorEl()
   const cs = getComputedStyle(textarea)
@@ -399,7 +404,11 @@ function scrollTextareaCaretToCenter(textarea: HTMLTextAreaElement): void {
   const top = marker.offsetTop
   const lineHeight = Number.parseFloat(cs.lineHeight) || marker.offsetHeight
   const delta = top + lineHeight / 2 - (textarea.scrollTop + textarea.clientHeight / 2)
-  if (Math.abs(delta) > 2) textarea.scrollTop += delta
+  if (Math.abs(delta) > 2) {
+    const target = textarea.scrollTop + delta
+    if (smooth) textarea.scrollTo({ top: target, behavior: 'smooth' })
+    else textarea.scrollTop = target
+  }
 }
 
 function ensureMirrorEl(): HTMLDivElement {
@@ -449,7 +458,7 @@ function caretRect(sel: Selection): { rect: DOMRect; node: Node } | null {
 }
 
 /** ir/wysiwyg：光标矩形 + 最近可滚动祖先，直接改 scrollTop 居中 */
-function scrollSelectionToCenter(): void {
+function scrollSelectionToCenter(smooth = false): void {
   const sel = window.getSelection()
   if (!sel || !sel.rangeCount) return
   const caret = caretRect(sel)
@@ -468,7 +477,37 @@ function scrollSelectionToCenter(): void {
   if (!scroller) return
   const box = scroller.getBoundingClientRect()
   const delta = caret.rect.top + caret.rect.height / 2 - (box.top + box.height / 2)
-  if (Math.abs(delta) > 2) scroller.scrollTop += delta
+  if (Math.abs(delta) > 2) {
+    const target = scroller.scrollTop + delta
+    if (smooth) scroller.scrollTo({ top: target, behavior: 'smooth' })
+    else scroller.scrollTop = target
+  }
+}
+
+/** 开关打字机 / 实例重建后把光标行居中一次。
+ *  无条件先把焦点交还编辑元素——在设置面板拨开关时 DOM 选区虽然还留在编辑器里，
+ *  实际焦点却在复选框上（输入会丢），所以不能依赖 caretInEditingEl 判断；
+ *  focus 幂等：textarea 恢复原光标位置，contenteditable 保留选区光标；
+ *  无选区时（重建后）把光标折叠到文档开头。 */
+function centerCaretSoon(smooth = false): void {
+  cancelAnimationFrame(typewriterRaf)
+  typewriterRaf = requestAnimationFrame(() => {
+    if (!store.typewriter || !el.value) return
+    const target = editingEl ?? locateEditingEl(store.mdMode)
+    if (!target) return
+    target.focus({ preventScroll: true })
+    if (!(target instanceof HTMLTextAreaElement)) {
+      const sel = window.getSelection()
+      if (!sel || !sel.rangeCount || !target.contains(sel.anchorNode)) {
+        const range = document.createRange()
+        range.selectNodeContents(target)
+        range.collapse(true)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+    }
+    scrollCaretToCenter(smooth)
+  })
 }
 
 function onCaretActivity(): void {
@@ -482,7 +521,8 @@ function onCaretActivity(): void {
   }
   if (store.typewriter) {
     cancelAnimationFrame(typewriterRaf)
-    typewriterRaf = requestAnimationFrame(scrollCaretToCenter)
+    // 打字跟随保持瞬时滚动（rAF 回调会带时间戳参数，不能直接传带参函数）
+    typewriterRaf = requestAnimationFrame(() => scrollCaretToCenter())
   }
 }
 
@@ -532,8 +572,8 @@ onMounted(() => build(store.mdMode))
 watch(() => store.mdMode, (m) => build(m))
 watch(() => store.theme, () => build(store.mdMode))
 watch(() => store.typewriter, (on) => {
-  // 打开开关立即把当前光标居中一次，否则首次开启毫无反馈
-  if (on) onCaretActivity()
+  // 打开开关立即把当前光标行平滑居中一次，否则首次开启毫无反馈
+  if (on) centerCaretSoon(true)
 })
 watch(
   () => props.revision,
