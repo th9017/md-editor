@@ -100,7 +100,7 @@
       <span class="spacer" />
       <span class="flash">{{ flash }}</span>
       <span v-if="store.active">
-        <template v-if="store.active.kind === 'md'">{{ store.active.content.length }} 字 · </template>
+        <template v-if="stats">{{ stats.chars }} 字 · {{ stats.words }} 词 · 约 {{ stats.minutes }} 分钟 · </template>
         <span :class="{ dirty: dirty }">{{ dirty ? '未保存' : '已保存' }}</span>
       </span>
     </footer>
@@ -125,23 +125,35 @@
       @confirm="modal.onConfirm"
       @cancel="modal = null"
     />
+
+    <CloseConfirm v-if="showCloseConfirm" @choice="onCloseChoice" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { listen } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import {
+  actionForCombo,
   addRecentFolder,
   closeTab,
   closeTabSafe,
+  comboFromEvent,
+  confirmOpenLarge,
   isUntitled,
   newUntitledDoc,
   openTab,
   refreshGit,
+  restoreSession,
   saveActive,
+  saveTab,
+  saveTabAs,
+  schedulePersistSession,
   setAutoSave,
   setFocusMode,
   setMdMode,
@@ -149,6 +161,7 @@ import {
   setTheme,
   setTypewriter,
   store,
+  type ActionId,
 } from './store'
 import {
   baseName,
@@ -156,8 +169,10 @@ import {
   createFolder,
   deleteEntry,
   fileMtimes,
+  isTextFile,
   joinPath,
   parentDir,
+  pickFile,
   pickFolder,
   pickSaveFile,
   readDirShallow,
@@ -182,6 +197,7 @@ import FindBar from './components/FindBar.vue'
 import QuickOpen from './components/QuickOpen.vue'
 import CommandPalette, { type CommandItem } from './components/CommandPalette.vue'
 import ContextMenu from './components/ContextMenu.vue'
+import CloseConfirm from './components/CloseConfirm.vue'
 import InputModal from './components/InputModal.vue'
 
 interface CtxItem {
@@ -209,9 +225,23 @@ const modal = ref<{
 const exportOpen = ref(false)
 const textTick = ref(0)
 const flash = ref('')
+const showCloseConfirm = ref(false)
 let flashTimer: ReturnType<typeof setTimeout> | undefined
+let unlistenFns: Array<() => void> = []
 
 const dirty = computed(() => !!store.active && store.active.content !== store.active.savedContent)
+
+/** 中英混合字数统计：去空白字符数、中文按字 + 英文按词、预计阅读时长 */
+const stats = computed(() => {
+  const tab = store.active
+  if (!tab || tab.kind !== 'md') return null
+  const text = tab.content
+  const chars = text.replace(/\s/g, '').length
+  const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) ?? []).length
+  const latin = (text.match(/[A-Za-z0-9][A-Za-z0-9'’-]*/g) ?? []).length
+  const words = cjk + latin
+  return { chars, words, minutes: words === 0 ? 0 : Math.max(1, Math.round(words / 300)) }
+})
 
 function notify(msg: string): void {
   flash.value = msg
@@ -238,6 +268,8 @@ async function setRootAndLoad(dir: string): Promise<void> {
 async function openFileAbs(abs: string): Promise<void> {
   try {
     const content = await readTextFile(abs)
+    // 超大文件实时渲染会卡顿，先征求用户同意
+    if (!(await confirmOpenLarge(baseName(abs), content))) return
     const mt = await fileMtimes([abs])
     openTab(abs, content, mt[abs] ?? null)
   } catch (e) {
@@ -259,6 +291,68 @@ async function openRecentFolder(dir: string): Promise<void> {
 async function openRecentFile(f: string): Promise<void> {
   await setRootAndLoad(parentDir(f))
   await openFileAbs(f)
+}
+
+async function openFileViaDialog(): Promise<void> {
+  const f = await pickFile([
+    { name: 'Markdown', extensions: ['md', 'markdown'] },
+    { name: '文本文件', extensions: ['txt', 'log', 'json', 'toml', 'yaml', 'yml', 'html', 'css', 'js', 'ts', 'csv', 'cfg'] },
+    { name: '所有文件', extensions: ['*'] },
+  ])
+  if (f) await openRecentFile(f)
+}
+
+// ---------- 拖拽 / 外部路径打开（拖进窗口与单实例转发共用同一入口） ----------
+
+/** 无扩展名的路径按目录处理 */
+function isDirLike(p: string): boolean {
+  return !baseName(p).includes('.')
+}
+
+async function openDroppedPaths(paths: string[]): Promise<void> {
+  let unsupported = 0
+  for (const p of paths) {
+    if (isTextFile(baseName(p))) {
+      await openRecentFile(p)
+    } else if (isDirLike(p)) {
+      try {
+        await setRootAndLoad(p)
+      } catch {
+        store.root = ''
+        unsupported += 1
+      }
+    } else {
+      unsupported += 1
+    }
+  }
+  if (unsupported) notify('仅支持拖入 Markdown / 文本文件与文件夹')
+}
+
+// ---------- 窗口关闭保护 ----------
+
+async function onCloseChoice(choice: 'save' | 'discard' | 'cancel'): Promise<void> {
+  showCloseConfirm.value = false
+  if (choice === 'cancel') return
+  if (choice === 'save') {
+    // 逐个保存；未命名文档会弹保存对话框，用户取消则中止关闭
+    for (const t of [...store.tabs]) {
+      if (t.content !== t.savedContent) {
+        const ok = await saveTab(t)
+        if (!ok) return
+      }
+    }
+  }
+  void getCurrentWebviewWindow().destroy()
+}
+
+/** 恢复会话后补载文件树与 Git 状态（不写最近列表） */
+async function fillTree(): Promise<void> {
+  try {
+    store.tree = await readDirShallow(store.root)
+  } catch {
+    store.root = ''
+  }
+  refreshGit().catch(() => {})
 }
 
 function onInput(value: string): void {
@@ -527,6 +621,14 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
   const items: CtxItem[] = []
   if (!untitled) items.push({ label: '在新窗口打开', action: () => openFileInNewWindow(tab.path) })
   items.push(
+    {
+      label: '另存为',
+      action: () => {
+        void saveTabAs(tab).then((ok) => {
+          if (ok) notify('✔ 已另存')
+        })
+      },
+    },
     { label: '关闭', action: () => void closeTabSafe(tab.path) },
     { label: '关闭其他', action: () => void closeOthers() },
     { label: '关闭右侧', action: () => void closeRight() },
@@ -559,6 +661,7 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
 
 const commands = computed<CommandItem[]>(() => [
   { id: 'open-folder', label: '打开文件夹', keywords: 'folder open', run: () => void openFolder() },
+  { id: 'open-file', label: '打开文件…', keywords: 'open file ctrl o', run: () => void openFileViaDialog() },
   { id: 'quick-open', label: '快速打开文件…', keywords: 'goto ctrl p', run: () => (store.showQuickOpen = true) },
   {
     id: 'open-new-window',
@@ -593,43 +696,64 @@ const commands = computed<CommandItem[]>(() => [
   { id: 'view-outline', label: '显示大纲', run: () => setSidebarView('outline') },
   { id: 'view-recent', label: '显示最近打开', run: () => setSidebarView('recent') },
   { id: 'view-settings', label: '打开设置', run: () => setSidebarView('settings') },
-  { id: 'save', label: '保存当前文件（Ctrl+S）', run: () => void saveActive() },
+  { id: 'save', label: '保存当前文件', run: () => runAction('save') },
+  { id: 'save-as', label: '另存为…', keywords: 'save as', run: () => runAction('saveAs') },
 ])
 
 // ---------- 全局快捷键 ----------
 
+function runAction(action: ActionId): void {
+  switch (action) {
+    case 'palette':
+      store.showPalette = !store.showPalette
+      break
+    case 'quickOpen':
+      store.showQuickOpen = !store.showQuickOpen
+      break
+    case 'find':
+      openFind()
+      break
+    case 'newDoc':
+      newUntitledDoc()
+      break
+    case 'openFile':
+      void openFileViaDialog()
+      break
+    case 'save':
+      saveActive()
+        .then((saved) => {
+          if (saved) notify('✔ 已保存')
+        })
+        .catch((err) => {
+          store.logs = `保存失败：${err}`
+          store.logVisible = true
+        })
+      break
+    case 'saveAs':
+      if (!store.active) {
+        notify('先打开一个文件')
+        break
+      }
+      saveTabAs(store.active)
+        .then((ok) => {
+          if (ok) notify('✔ 已另存')
+        })
+        .catch((err) => {
+          store.logs = `另存为失败：${err}`
+          store.logVisible = true
+        })
+      break
+  }
+}
+
 function onKeydown(e: KeyboardEvent): void {
   if (e.defaultPrevented) return
-  const mod = e.ctrlKey || e.metaKey
-  if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
-    e.preventDefault()
-    store.showPalette = !store.showPalette
-  } else if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') {
-    e.preventDefault()
-    store.showQuickOpen = !store.showQuickOpen
-  } else if (mod && e.key.toLowerCase() === 'f') {
-    const tab = store.active
-    if (tab?.kind === 'md') {
-      e.preventDefault()
-      store.showFindBar = true
-    }
-    // 文本文件交给 CodeMirror 内置搜索
-  } else if (mod && e.key.toLowerCase() === 'n') {
-    e.preventDefault()
-    newUntitledDoc()
-  } else if (mod && e.key.toLowerCase() === 's') {
-    e.preventDefault()
-    saveActive()
-      .then((saved) => {
-        if (saved) notify('✔ 已保存')
-      })
-      .catch((err) => {
-        store.logs = `保存失败：${err}`
-        store.logVisible = true
-      })
-  } else if (e.key === 'Escape') {
-    exportOpen.value = false
-  }
+  if (e.key === 'Escape') exportOpen.value = false
+  const action = actionForCombo(comboFromEvent(e))
+  // 文本文件的查找交给 CodeMirror 内置搜索
+  if (!action || (action === 'find' && store.active?.kind !== 'md')) return
+  e.preventDefault()
+  runAction(action)
 }
 
 // ---------- 生命周期 ----------
@@ -639,19 +763,53 @@ function onWindowFocus(): void {
   refreshGit().catch(() => {})
 }
 
+// 标签与工作区的任何变化 → 防抖持久化会话（仅主窗口实际写盘）
+watch([() => store.root, () => store.activePath, () => store.tabs], () => schedulePersistSession(), {
+  deep: true,
+})
+
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('focus', onWindowFocus)
   pollTimer = setInterval(() => void pollExternalChanges(), 3000)
   // 多窗口：?file= 启动参数 → 以文件所在目录为工作区，单标签打开
   const bootFile = new URLSearchParams(window.location.search).get('file')
-  if (bootFile) void openRecentFile(bootFile)
+  if (bootFile) {
+    void openRecentFile(bootFile)
+  } else {
+    // 主窗口：恢复上次会话（含未命名文档草稿），随后补载文件树
+    void restoreSession().then((ok) => {
+      if (ok && store.root) void fillTree()
+      schedulePersistSession(0)
+    })
+  }
+  // 窗口关闭保护：有未保存内容时拦截，弹三选确认
+  void getCurrentWebviewWindow()
+    .onCloseRequested((event) => {
+      if (!store.tabs.some((t) => t.content !== t.savedContent)) return
+      event.preventDefault()
+      showCloseConfirm.value = true
+    })
+    .then((un) => unlistenFns.push(un))
+  // 拖拽文件 / 文件夹进窗口打开
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      const payload = event.payload
+      if (payload.type !== 'drop' || !payload.paths.length) return
+      void openDroppedPaths([...payload.paths])
+    })
+    .then((un) => unlistenFns.push(un))
+  // 单实例 / 文件关联：Rust 侧转发来的打开路径
+  void listen<string[]>('open-paths', (e) => {
+    if (Array.isArray(e.payload) && e.payload.length) void openDroppedPaths(e.payload)
+  }).then((un) => unlistenFns.push(un))
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('focus', onWindowFocus)
   clearInterval(pollTimer)
+  for (const un of unlistenFns) un()
 })
 </script>
 

@@ -36,7 +36,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { store } from '../store'
 import { baseName, listWorkspaceFiles, parentDir, readTextFileChecked } from '../tauri'
-import { openTab } from '../store'
+import { confirmOpenLarge, openTab } from '../store'
 import { fuzzyMatch } from '../fuzzy'
 
 const emit = defineEmits<{ (e: 'opened', path: string): void }>()
@@ -86,10 +86,13 @@ function onKey(e: KeyboardEvent): void {
 }
 
 async function choose(path: string): Promise<void> {
-  close()
   const name = baseName(path)
   try {
-    openTab(path, await readTextFileChecked(path, name))
+    const content = await readTextFileChecked(path, name)
+    // 超大文件实时渲染会卡顿，先征求用户同意
+    if (!(await confirmOpenLarge(name, content))) return
+    close()
+    openTab(path, content)
     emit('opened', path)
   } catch (e) {
     store.logs = String(e)

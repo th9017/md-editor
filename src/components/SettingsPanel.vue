@@ -115,14 +115,39 @@
           <span>专注模式</span>
         </label>
       </section>
+
+      <!-- 快捷键 -->
+      <section class="sec">
+        <h4 class="sec-title">快捷键</h4>
+        <div v-for="a in ACTIONS" :key="a.id" class="row-inline key-row">
+          <span class="row-label grow">{{ a.label }}</span>
+          <button
+            type="button"
+            class="key-btn"
+            :class="{ capturing: capturing === a.id }"
+            :title="capturing === a.id ? '按下新的快捷键，Esc 取消' : '点击修改'"
+            @click="startCapture(a.id)"
+          >
+            {{ capturing === a.id ? '按下新快捷键…' : store.keymap[a.id] }}
+          </button>
+        </div>
+        <p v-if="keyError" class="key-error">{{ keyError }}</p>
+        <div class="row-inline">
+          <button type="button" class="accent-reset" @click="onResetKeys">恢复默认</button>
+        </div>
+        <p class="hint">仅可改绑应用级动作；编辑器内置快捷键不受影响。新快捷键需包含 Ctrl 或 Alt（或为 F1~F12）。</p>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
+  ACTIONS,
+  comboFromEvent,
+  resetKeybindings,
   setAccent,
   setAutoSave,
   setBg,
@@ -130,9 +155,11 @@ import {
   setFontSize,
   setImageFolder,
   setLineHeight,
+  setKeybinding,
   setTheme,
   setTypewriter,
   store,
+  type ActionId,
 } from '../store'
 import { baseName, readImageBytes, saveBgImage } from '../tauri'
 import type { ThemeId } from '../types'
@@ -233,6 +260,59 @@ function removeBackground(): void {
   store.bgUrl = ''
   setBg('', 0, 0)
 }
+
+// ---------- 快捷键改绑 ----------
+
+const capturing = ref<ActionId | null>(null)
+const keyError = ref('')
+let errorTimer: ReturnType<typeof setTimeout> | undefined
+
+function startCapture(action: ActionId): void {
+  if (capturing.value) return
+  keyError.value = ''
+  capturing.value = action
+  // 捕获阶段拦截，避免新按键同时触发应用级动作
+  window.addEventListener('keydown', onCaptureKey, true)
+}
+
+function onCaptureKey(e: KeyboardEvent): void {
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  const action = capturing.value
+  if (!action) return
+  if (e.key === 'Escape') {
+    stopCapture()
+    return
+  }
+  if (!e.ctrlKey && !e.altKey && !e.metaKey && !/^F\d{1,2}$/.test(e.key)) {
+    // 纯字母数字等不允许：会抢占正常输入
+    failCapture('快捷键需包含 Ctrl 或 Alt（或使用 F1~F12 功能键）')
+    return
+  }
+  const combo = comboFromEvent(e)
+  if (!combo) return // 只按了修饰键，等待主键
+  const err = setKeybinding(action, combo)
+  if (err) failCapture(err)
+  stopCapture()
+}
+
+function failCapture(msg: string): void {
+  keyError.value = msg
+  clearTimeout(errorTimer)
+  errorTimer = setTimeout(() => (keyError.value = ''), 3000)
+}
+
+function stopCapture(): void {
+  capturing.value = null
+  window.removeEventListener('keydown', onCaptureKey, true)
+}
+
+function onResetKeys(): void {
+  resetKeybindings()
+  keyError.value = ''
+}
+
+onBeforeUnmount(stopCapture)
 </script>
 
 <style scoped>
@@ -409,5 +489,23 @@ function removeBackground(): void {
 .check-row input[type='checkbox'] {
   accent-color: var(--accent);
   margin: 0;
+}
+
+/* 快捷键改绑行 */
+.key-btn {
+  min-width: 132px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.key-btn.capturing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.key-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--err);
 }
 </style>

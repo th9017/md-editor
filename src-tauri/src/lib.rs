@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
+// Manager：get_webview_window；Emitter：向窗口 emit 事件（Tauri 2 中二者均为 trait）
+use tauri::{Emitter, Manager};
 
 // ---------- 数据结构 ----------
 
@@ -413,12 +415,72 @@ fn data_dir() -> Result<String, String> {
         .ok_or_else(|| "无法定位应用数据目录".to_string())
 }
 
+// ---------- 会话持久化 ----------
+
+/// 保存会话：把内容原样写入「数据目录/session.json」。
+/// 数据目录与 data_dir 命令同一套解析（含便携模式）；父目录不存在则先创建。
+#[tauri::command]
+async fn save_session(content: String) -> Result<(), String> {
+    let dir = app_data_dir().ok_or("无法定位应用数据目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
+    fs::write(dir.join("session.json"), content).map_err(|e| format!("写入会话失败：{e}"))
+}
+
+/// 读取会话：文件不存在或读取失败一律返回空字符串（会话丢失不致命，不让前端报错）
+#[tauri::command]
+async fn load_session() -> String {
+    app_data_dir()
+        .and_then(|dir| fs::read_to_string(dir.join("session.json")).ok())
+        .unwrap_or_default()
+}
+
+// ---------- 单实例：启动参数中的文件路径转发 ----------
+
+/// 判断命令行参数是否是要交给主窗口打开的路径：
+/// 必须真实存在；文件还要求扩展名属于可编辑文本类型（TEXT_EXTS），目录则直接放行。
+/// 与单实例插件回调、首次启动 setup 共用同一套标准。
+fn is_openable_arg(arg: &str) -> bool {
+    let p = Path::new(arg);
+    if p.is_dir() {
+        return true;
+    }
+    p.is_file() && is_text_ext(arg)
+}
+
+/// 把启动参数里筛出的文件/目录路径转发给主窗口：
+/// 事件名固定 open-paths，payload 为字符串数组。主窗口不存在时静默丢弃。
+fn forward_open_paths(app: &tauri::AppHandle, args: &[String]) {
+    let paths: Vec<String> = args.iter().filter(|a| is_openable_arg(a)).cloned().collect();
+    if paths.is_empty() {
+        return;
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("open-paths", &paths);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例插件必须注册在所有其他插件之前（官方要求）：
+        // 二次启动时新进程把命令行参数转交给已有实例后立即退出
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            forward_open_paths(app, &args);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            // 首次启动（自身即主实例）：解析自身 argv（跳过第 0 个程序路径），
+            // 与单实例回调走完全相同的过滤与转发逻辑。
+            // 用 args_os + to_string_lossy 而非 args()：中文/异常字符路径不 panic（见 AGENTS.md 陷阱 8）
+            let args: Vec<String> = std::env::args_os()
+                .skip(1)
+                .map(|a| a.to_string_lossy().to_string())
+                .collect();
+            forward_open_paths(app.handle(), &args);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             search_workspace,
             list_workspace_files,
@@ -430,6 +492,8 @@ pub fn run() {
             list_snapshots,
             read_snapshot_file,
             data_dir,
+            save_session,
+            load_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

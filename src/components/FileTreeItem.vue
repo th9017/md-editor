@@ -21,7 +21,7 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
 import type { FileNode } from '../types'
-import { openTab, store } from '../store'
+import { confirmOpenLarge, openTab, store } from '../store'
 import { fileMtimes, readDirShallow, readTextFileChecked, relPath } from '../tauri'
 
 defineOptions({ name: 'FileTreeItem' })
@@ -64,6 +64,8 @@ async function onClick(): Promise<void> {
   }
   try {
     const content = await readTextFileChecked(node.path, node.name)
+    // 超大文件实时渲染会卡顿，先征求用户同意
+    if (!(await confirmOpenLarge(node.name, content))) return
     const mt = await fileMtimes([node.path])
     openTab(node.path, content, mt[node.path] ?? null)
   } catch (e) {

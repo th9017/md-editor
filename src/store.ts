@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
 import { writeTextFile } from '@tauri-apps/plugin-fs'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   FileNode,
   GitCommit,
@@ -17,9 +18,11 @@ import {
   fileMtimes,
   gitStatus,
   kindOf,
+  loadSession,
   parentDir,
   pickSaveFile,
   readDirShallow,
+  saveSession,
   saveSnapshot,
 } from './tauri'
 
@@ -47,6 +50,80 @@ function saveList(key: string, list: string[]) {
   localStorage.setItem(key, JSON.stringify(list))
 }
 
+// ---------- 快捷键 ----------
+
+export type ActionId = 'palette' | 'quickOpen' | 'find' | 'newDoc' | 'openFile' | 'save' | 'saveAs'
+
+/** 应用级全局动作清单（Vditor / CodeMirror 编辑器内置键位不在此列，无法改绑） */
+export const ACTIONS: { id: ActionId; label: string }[] = [
+  { id: 'palette', label: '命令面板' },
+  { id: 'quickOpen', label: '快速打开' },
+  { id: 'find', label: '查找 / 替换' },
+  { id: 'newDoc', label: '新建文档' },
+  { id: 'openFile', label: '打开文件' },
+  { id: 'save', label: '保存' },
+  { id: 'saveAs', label: '另存为' },
+]
+
+export const DEFAULT_KEYMAP: Record<ActionId, string> = {
+  palette: 'Ctrl+Shift+P',
+  quickOpen: 'Ctrl+P',
+  find: 'Ctrl+F',
+  newDoc: 'Ctrl+N',
+  openFile: 'Ctrl+O',
+  save: 'Ctrl+S',
+  saveAs: 'Ctrl+Shift+S',
+}
+
+/** 读 localStorage 的用户键位覆盖，并与默认表合并（防止旧数据缺项） */
+function loadKeymap(): Record<ActionId, string> {
+  const merged = { ...DEFAULT_KEYMAP }
+  try {
+    const saved = JSON.parse(localStorage.getItem('mdtex.keymap') ?? '{}') as unknown
+    if (saved && typeof saved === 'object') {
+      for (const a of ACTIONS) {
+        const v = (saved as Record<string, unknown>)[a.id]
+        if (typeof v === 'string' && v) merged[a.id] = v
+      }
+    }
+  } catch {
+    /* 损坏的键位数据按默认表处理 */
+  }
+  return merged
+}
+
+/** 修改一个动作的绑定并持久化；返回冲突提示文案，null 表示成功 */
+export function setKeybinding(action: ActionId, keys: string): string | null {
+  const clash = ACTIONS.find((a) => a.id !== action && store.keymap[a.id] === keys)
+  if (clash) return `与「${clash.label}」冲突，未修改`
+  store.keymap[action] = keys
+  localStorage.setItem('mdtex.keymap', JSON.stringify(store.keymap))
+  return null
+}
+
+export function resetKeybindings(): void {
+  for (const a of ACTIONS) store.keymap[a.id] = DEFAULT_KEYMAP[a.id]
+  localStorage.setItem('mdtex.keymap', JSON.stringify(store.keymap))
+}
+
+/** KeyboardEvent → 归一化组合键（如 "Ctrl+Shift+P"）；纯修饰键返回 '' */
+export function comboFromEvent(e: KeyboardEvent): string {
+  const k = e.key
+  if (!k || k === 'Control' || k === 'Shift' || k === 'Alt' || k === 'Meta') return ''
+  const parts: string[] = []
+  if (e.ctrlKey) parts.push('Ctrl')
+  if (e.altKey) parts.push('Alt')
+  if (e.shiftKey) parts.push('Shift')
+  if (e.metaKey) parts.push('Win')
+  parts.push(k.length === 1 ? k.toUpperCase() : k === ' ' ? 'Space' : k)
+  return parts.join('+')
+}
+
+/** 组合键 → 动作（查当前键位表） */
+export function actionForCombo(combo: string): ActionId | null {
+  return ACTIONS.find((a) => store.keymap[a.id] === combo)?.id ?? null
+}
+
 export const store = reactive({
   // 工作区与文件
   root: '',
@@ -72,6 +149,8 @@ export const store = reactive({
   imageFolder: localStorage.getItem('mdtex.imageFolder') || 'assets',
   typewriter: loadFlag<'on' | 'off'>('mdtex.typewriter', 'off') === 'on',
   focusMode: loadFlag<'on' | 'off'>('mdtex.focusMode', 'off') === 'on',
+  // 快捷键绑定（mdtex.keymap 覆盖默认表）
+  keymap: loadKeymap(),
   // 大纲
   outline: [] as Heading[],
   activeHeading: '',
@@ -167,8 +246,8 @@ export function isUntitled(path: string): boolean {
   return path.startsWith(UNTITLED_PREFIX)
 }
 
-/** 新建未命名文档：不落盘，首次保存（Ctrl+S）时再询问位置与文件名 */
-export function newUntitledDoc(): void {
+/** 取一个未被现有标签占用的未命名伪路径序号 */
+function allocUntitledPath(): string {
   const used = new Set(
     store.tabs
       .filter((t) => isUntitled(t.path))
@@ -176,10 +255,15 @@ export function newUntitledDoc(): void {
   )
   let n = 1
   while (used.has(n)) n += 1
-  const path = UNTITLED_PREFIX + n
+  return UNTITLED_PREFIX + n
+}
+
+/** 新建未命名文档：不落盘，首次保存（Ctrl+S）时再询问位置与文件名 */
+export function newUntitledDoc(): void {
+  const path = allocUntitledPath()
   store.tabs.push({
     path,
-    name: n === 1 ? '未命名.md' : `未命名-${n}.md`,
+    name: path === UNTITLED_PREFIX + '1' ? '未命名.md' : `未命名-${path.slice(UNTITLED_PREFIX.length)}.md`,
     kind: 'md',
     content: '',
     savedContent: '',
@@ -187,6 +271,96 @@ export function newUntitledDoc(): void {
     externalChanged: false,
   })
   store.activePath = path
+}
+
+// ---------- 会话恢复（主窗口专用，兼作崩溃/退出草稿恢复） ----------
+
+interface SessionTab {
+  path: string
+  name: string
+  kind: Tab['kind']
+  content: string
+  savedContent: string
+  mtime: number | null
+}
+
+interface SessionData {
+  root: string
+  activePath: string
+  tabs: SessionTab[]
+}
+
+/** 只有主窗口负责会话读写；editor-* 多窗口的未保存内容由关闭确认兜底 */
+const isMainWindow = getCurrentWebviewWindow().label === 'main'
+
+let sessionTimer: ReturnType<typeof setTimeout> | undefined
+let sessionRestored = false
+
+/** 标签/工作区变化后防抖写入会话（失败静默，不影响编辑） */
+export function schedulePersistSession(delay = 1000): void {
+  if (!isMainWindow) return
+  clearTimeout(sessionTimer)
+  sessionTimer = setTimeout(() => {
+    const data: SessionData = {
+      root: store.root,
+      activePath: store.activePath,
+      tabs: store.tabs.map((t) => ({
+        path: t.path,
+        name: t.name,
+        kind: t.kind,
+        content: t.content,
+        savedContent: t.savedContent,
+        mtime: t.mtime,
+      })),
+    }
+    saveSession(JSON.stringify(data)).catch(() => {})
+  }, delay)
+}
+
+/** 启动时恢复上次会话；返回是否恢复出了标签（工作区目录由调用方补载文件树） */
+export async function restoreSession(): Promise<boolean> {
+  if (!isMainWindow || sessionRestored) return false
+  sessionRestored = true
+  try {
+    const raw = await loadSession()
+    if (!raw) return false
+    const data = JSON.parse(raw) as SessionData
+    if (!data || !Array.isArray(data.tabs) || !data.tabs.length) return false
+    for (const t of data.tabs) {
+      if (!t || typeof t.path !== 'string') continue
+      const kind: Tab['kind'] = t.kind === 'text' || t.kind === 'other' ? t.kind : 'md'
+      if (isUntitled(t.path)) {
+        // 未命名草稿：重新分配伪路径，内容与名称原样恢复
+        store.tabs.push({
+          path: allocUntitledPath(),
+          name: t.name || '未命名.md',
+          kind,
+          content: t.content ?? '',
+          savedContent: t.savedContent ?? '',
+          mtime: null,
+          externalChanged: false,
+        })
+      } else {
+        store.tabs.push({
+          path: t.path,
+          name: t.name || baseName(t.path),
+          kind,
+          content: t.content ?? '',
+          savedContent: t.savedContent ?? t.content ?? '',
+          mtime: typeof t.mtime === 'number' ? t.mtime : null,
+          externalChanged: false,
+        })
+      }
+    }
+    if (!store.tabs.length) return false
+    store.activePath = store.tabs.some((t) => t.path === data.activePath)
+      ? data.activePath
+      : store.tabs[0].path
+    if (typeof data.root === 'string') store.root = data.root
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ---------- 保存 ----------
@@ -197,8 +371,8 @@ const SAVE_FILTERS = [
   { name: '所有文件', extensions: ['*'] },
 ]
 
-/** 未命名文档首存：弹系统对话框询问保存位置与文件名；取消返回 false（内容不落盘） */
-async function saveTabAs(tab: Tab): Promise<boolean> {
+/** 未命名文档首存 / 手动另存为：弹系统对话框询问保存位置与文件名；取消返回 false（内容不落盘） */
+export async function saveTabAs(tab: Tab): Promise<boolean> {
   const target = await pickSaveFile(tab.name, SAVE_FILTERS)
   if (!target) return false
   // 目标路径若已被其他标签打开：内容干净则让其让位，有未保存更改则中止
@@ -270,6 +444,23 @@ export async function saveActive(): Promise<boolean> {
   const t = store.active
   if (!t) return true
   return await saveTab(t)
+}
+
+/** 另存为：对活动标签弹对话框选择新位置写入 */
+export async function saveActiveAs(): Promise<boolean> {
+  const t = store.active
+  if (!t) return true
+  return await saveTabAs(t)
+}
+
+/** 打开大文件（>1MB）前确认；按 UTF-8 字节数判断（中文 3 字节/字，字符数会低估体积）；返回 false 表示用户取消打开 */
+export async function confirmOpenLarge(name: string, content: string): Promise<boolean> {
+  const bytes = new TextEncoder().encode(content).length
+  if (bytes <= 1024 * 1024) return true
+  return await ask(
+    `「${name}」约 ${(bytes / 1024 / 1024).toFixed(1)} MB，实时渲染可能明显卡顿。\n\n仍要打开吗？`,
+    { title: '打开大文件', kind: 'warning', okLabel: '仍要打开', cancelLabel: '取消' },
+  )
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined

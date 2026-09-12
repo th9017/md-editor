@@ -19,6 +19,12 @@ export async function pickFolder(): Promise<string | null> {
   return typeof dir === 'string' ? dir : null
 }
 
+/** 弹出系统对话框选择一个文件，取消时返回 null */
+export async function pickFile(filters: { name: string; extensions: string[] }[]): Promise<string | null> {
+  const p = await open({ directory: false, multiple: false, filters, title: '打开文件' })
+  return typeof p === 'string' ? p : null
+}
+
 export function kindOf(name: string): 'md' | 'text' | 'other' {
   const ext = name.split('.').pop()?.toLowerCase() ?? ''
   if (ext === 'md' || ext === 'markdown') return 'md'
@@ -117,6 +123,16 @@ export async function deleteEntry(path: string, isDir: boolean): Promise<void> {
 /** 应用数据目录（背景图、历史快照存放根） */
 export async function appDataDir(): Promise<string> {
   return await invoke<string>('data_dir')
+}
+
+/** 会话持久化：把 JSON 字符串写入应用数据目录的 session.json（便携模式由 Rust 端解析） */
+export async function saveSession(json: string): Promise<void> {
+  await invoke('save_session', { content: json })
+}
+
+/** 读取会话 JSON 字符串；文件不存在或读取失败返回空字符串 */
+export async function loadSession(): Promise<string> {
+  return await invoke<string>('load_session')
 }
 
 export async function searchWorkspace(root: string, query: string): Promise<SearchHit[]> {
