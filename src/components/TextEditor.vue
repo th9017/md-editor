@@ -46,7 +46,7 @@ function build(): void {
 }
 
 onMounted(build)
-watch(() => store.theme, build)
+// 主题切换的重建由 App.vue 的 :key（含 theme）驱动，这里不再重复 watch 重建
 watch(() => props.vim, build)
 watch(
   () => props.revision,

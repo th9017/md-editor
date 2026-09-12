@@ -168,6 +168,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   ACTIONS,
   comboFromEvent,
+  logError,
   resetKeybindings,
   setAccent,
   setAutoSave,
@@ -277,8 +278,7 @@ async function onCheckUpdate(): Promise<void> {
     )
     if (go) await openUrl(RELEASES_PAGE)
   } catch (e) {
-    store.logs = `检查更新失败：${e}`
-    store.logVisible = true
+    logError(`检查更新失败：${e}`)
     const open = await ask(
       `检查更新失败：${e}。\n\n常见原因：GitHub 接口限流（HTTP 403，多账号共享出口 IP 时常见）或网络不可达；如使用代理，请在系统代理开启后重试。\n\n可直接前往发布页查看最新版本。`,
       { title: '检查更新', okLabel: '打开发布页', cancelLabel: '关闭' },
@@ -318,8 +318,7 @@ async function pickBackground(): Promise<void> {
     store.bgUrl = URL.createObjectURL(blob)
     setBg(baseName(stored), store.bgDim, store.bgBlur)
   } catch (e) {
-    store.logs = `设置背景图失败：${e}`
-    store.logVisible = true
+    logError(`设置背景图失败：${e}`)
   } finally {
     bgBusy.value = false
   }

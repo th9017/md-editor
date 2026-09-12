@@ -1,6 +1,6 @@
 [package]
 name = "mdtex"
-version = "0.6.0"
+version = "0.6.1"
 description = "本地轻量 Markdown 编辑器"
 authors = ["jiang"]
 edition = "2021"
@@ -10,7 +10,8 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "mdtex_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 桌面平台只需 cdylib + rlib；staticlib 仅供移动端使用，去掉可省一次全量编译
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -23,7 +24,6 @@ tauri-plugin-fs = "2"
 # 单实例：二次启动时把文件路径转发给已运行实例后立即退出
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

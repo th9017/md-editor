@@ -60,7 +60,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { replaceAllInWorkspace, store } from '../store'
+import { logError, replaceAllInWorkspace, store } from '../store'
 import { baseName, searchWorkspace } from '../tauri'
 import type { SearchHit } from '../types'
 
@@ -103,8 +103,7 @@ async function runNow(): Promise<void> {
     store.searchHits = await searchWorkspace(store.root, query)
   } catch (e) {
     store.searchHits = []
-    store.logs = `搜索失败：${e}`
-    store.logVisible = true
+    logError(`搜索失败：${e}`)
   } finally {
     store.searchBusy = false
   }
@@ -121,8 +120,7 @@ async function replaceAll(): Promise<void> {
       await runNow()
     }
   } catch (e) {
-    store.logs = `替换失败：${e}`
-    store.logVisible = true
+    logError(`替换失败：${e}`)
   } finally {
     replaceBusy.value = false
   }

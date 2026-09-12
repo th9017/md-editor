@@ -199,7 +199,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { listen } from '@tauri-apps/api/event'
@@ -212,11 +212,11 @@ import {
   closeTab,
   closeTabSafe,
   comboFromEvent,
-  confirmOpenLarge,
   isUntitled,
+  logError,
   newUntitledDoc,
+  openFileAt,
   openInSecondaryPane,
-  openTab,
   refreshGit,
   restoreSession,
   saveActive,
@@ -251,6 +251,7 @@ import {
   pickSaveFile,
   readDirShallow,
   renameEntry,
+  takePendingOpenPaths,
 } from './tauri'
 import { buildStandaloneHtml, inlineWorkspaceImages, printHtml } from './export'
 import { openFileInNewWindow } from './multiwindow'
@@ -264,8 +265,8 @@ import OutlinePanel from './components/OutlinePanel.vue'
 import RecentPanel from './components/RecentPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import TabsBar from './components/TabsBar.vue'
-import MarkdownEditor from './components/MarkdownEditor.vue'
-import TextEditor from './components/TextEditor.vue'
+// 两个编辑器内核（Vditor / CodeMirror）体积大，按需异步加载：
+// 只编辑纯文本时不解析 Vditor，反之亦然，启动时少解析几百 KB JS
 import LogPanel from './components/LogPanel.vue'
 import FindBar from './components/FindBar.vue'
 import QuickOpen from './components/QuickOpen.vue'
@@ -273,6 +274,9 @@ import CommandPalette, { type CommandItem } from './components/CommandPalette.vu
 import ContextMenu from './components/ContextMenu.vue'
 import CloseConfirm from './components/CloseConfirm.vue'
 import InputModal from './components/InputModal.vue'
+
+const MarkdownEditor = defineAsyncComponent(() => import('./components/MarkdownEditor.vue'))
+const TextEditor = defineAsyncComponent(() => import('./components/TextEditor.vue'))
 
 interface CtxItem {
   label?: string
@@ -316,17 +320,76 @@ const dirty = computed(() => {
   return !!tab && tab.content !== tab.savedContent
 })
 
-/** 中英混合字数统计：去空白字符数、中文按字 + 英文按词、预计阅读时长 */
-const stats = computed(() => {
-  const tab = store.focusedTab
-  if (!tab || tab.kind !== 'md') return null
-  const text = tab.content
-  const chars = text.replace(/\s/g, '').length
-  const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) ?? []).length
-  const latin = (text.match(/[A-Za-z0-9][A-Za-z0-9'’-]*/g) ?? []).length
+/** 中英混合字数统计（单次遍历，等价于旧的 replace+2×match 三遍正则）：
+ *  chars=去空白字符数（UTF-16 计法），words=中文字数 + 英文词数 */
+function countStats(text: string): { chars: number; words: number; minutes: number } {
+  let chars = 0
+  let cjk = 0
+  let latin = 0
+  let inWord = false
+  for (const ch of text) {
+    const code = ch.codePointAt(0) as number
+    // 与 JS \s 等价的空白判断（\t\n\v\f\r 空格 + Unicode 空白）
+    if (
+      code === 32 || code === 9 || code === 10 || code === 11 || code === 12 || code === 13 ||
+      code === 0xa0 || code === 0x1680 || (code >= 0x2000 && code <= 0x200a) ||
+      code === 0x2028 || code === 0x2029 || code === 0x202f || code === 0x205f ||
+      code === 0x3000 || code === 0xfeff
+    ) {
+      inWord = false
+      continue
+    }
+    chars += ch.length
+    if ((code >= 0x3400 && code <= 0x4dbf) || (code >= 0x4e00 && code <= 0x9fff)) {
+      cjk++
+      inWord = false
+    } else if (
+      (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code >= 48 && code <= 57)
+    ) {
+      if (!inWord) latin++
+      inWord = true
+    } else if (inWord && (ch === "'" || ch === '’' || ch === '-')) {
+      /* 词内连字符 / 撇号延续当前词 */
+    } else {
+      inWord = false
+    }
+  }
   const words = cjk + latin
   return { chars, words, minutes: words === 0 ? 0 : Math.max(1, Math.round(words / 300)) }
-})
+}
+
+/** 状态栏字数统计：换标签立即重算，同篇连续输入 250ms 防抖（旧 computed 每键 3 遍全文正则） */
+const stats = ref<{ chars: number; words: number; minutes: number } | null>(null)
+let statsTimer: ReturnType<typeof setTimeout> | undefined
+let statsLastPath = ''
+watch(
+  () => {
+    const t = store.focusedTab
+    return t && t.kind === 'md'
+      ? `${t.path}\u0000${t.content.length}\u0000${store.contentRevision}`
+      : null
+  },
+  (key) => {
+    const t = store.focusedTab
+    if (key === null || !t || t.kind !== 'md') {
+      stats.value = null
+      statsLastPath = ''
+      return
+    }
+    clearTimeout(statsTimer)
+    if (t.path !== statsLastPath) {
+      // 换标签：立即重算，避免 250ms 内显示上一篇的统计
+      statsLastPath = t.path
+      stats.value = countStats(t.content)
+      return
+    }
+    statsTimer = setTimeout(() => {
+      const cur = store.focusedTab
+      stats.value = cur && cur.kind === 'md' ? countStats(cur.content) : null
+    }, 250)
+  },
+  { immediate: true },
+)
 
 function notify(msg: string): void {
   flash.value = msg
@@ -351,16 +414,7 @@ async function setRootAndLoad(dir: string): Promise<void> {
 }
 
 async function openFileAbs(abs: string): Promise<void> {
-  try {
-    const content = await readTextFile(abs)
-    // 超大文件实时渲染会卡顿，先征求用户同意
-    if (!(await confirmOpenLarge(baseName(abs), content))) return
-    const mt = await fileMtimes([abs])
-    openTab(abs, content, mt[abs] ?? null)
-  } catch (e) {
-    store.logs = String(e)
-    store.logVisible = true
-  }
+  await openFileAt(abs)
 }
 
 function openPath(p: string): void {
@@ -446,6 +500,8 @@ function onInputPrimary(value: string): void {
   if (!tab) return
   tab.content = value
   scheduleSave(1200, tab)
+  // 输入显式驱动会话持久化（签名 watch 不感知等长编辑）
+  schedulePersistSession()
 }
 
 /** 副窗格输入：写入副窗格标签（绝不能写进活动标签，否则分屏下会互相覆盖文件） */
@@ -454,6 +510,7 @@ function onInputSecondary(value: string): void {
   if (!tab) return
   tab.content = value
   scheduleSave(1200, tab)
+  schedulePersistSession()
 }
 
 // ---------- 大纲 ----------
@@ -485,8 +542,7 @@ async function currentHtml(): Promise<string | null> {
     const inlined = await inlineWorkspaceImages(body, store.root)
     return await buildStandaloneHtml(tab.name.replace(/\.(md|markdown)$/i, ''), inlined)
   } catch (e) {
-    store.logs = `导出失败：${e}`
-    store.logVisible = true
+    logError(`导出失败：${e}`)
     return null
   }
 }
@@ -512,8 +568,7 @@ async function doExport(kind: 'html' | 'pdf' | 'copy'): Promise<void> {
       notify('✔ HTML 已复制到剪贴板')
     }
   } catch (e) {
-    store.logs = `导出失败：${e}`
-    store.logVisible = true
+    logError(`导出失败：${e}`)
   }
 }
 
@@ -555,10 +610,10 @@ async function reloadExternal(): Promise<void> {
     if (t != null) tab.mtime = t
     if (tab.kind === 'md') store.contentRevision++
     else textTick.value++
+    schedulePersistSession()
     notify('已重新加载外部修改')
   } catch (e) {
-    store.logs = `重新加载失败：${e}`
-    store.logVisible = true
+    logError(`重新加载失败：${e}`)
   }
 }
 
@@ -592,8 +647,7 @@ provide('openTreeCtx', (x: number, y: number, node: FileNode) => {
       label: '在资源管理器中显示',
       action: () => {
         revealItemInDir(node.path).catch((e) => {
-          store.logs = String(e)
-          store.logVisible = true
+          logError(String(e))
         })
       },
     },
@@ -626,8 +680,7 @@ function startNewFile(dir: string): void {
         await openFileAbs(target)
         notify('✔ 已创建 ' + baseName(target))
       } catch (e) {
-        store.logs = String(e)
-        store.logVisible = true
+        logError(String(e))
       }
     })()
   }, '文件名')
@@ -642,8 +695,7 @@ function startNewFolder(dir: string): void {
         await treeRef.value?.reloadDir(dir)
         notify('✔ 已创建文件夹 ' + name)
       } catch (e) {
-        store.logs = String(e)
-        store.logVisible = true
+        logError(String(e))
       }
     })()
   }, '文件夹名')
@@ -669,8 +721,7 @@ function startRename(node: FileNode): void {
         await treeRef.value?.reloadDir(parentDir(node.path))
         refreshGit().catch(() => {})
       } catch (e) {
-        store.logs = String(e)
-        store.logVisible = true
+        logError(String(e))
       }
     })()
   })
@@ -695,8 +746,7 @@ function startDelete(node: FileNode): void {
       await treeRef.value?.reloadDir(parentDir(node.path))
       refreshGit().catch(() => {})
     } catch (e) {
-      store.logs = String(e)
-      store.logVisible = true
+      logError(String(e))
     }
   })()
 }
@@ -745,8 +795,7 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
         label: '在资源管理器中显示',
         action: () => {
           revealItemInDir(tab.path).catch((e) => {
-            store.logs = String(e)
-            store.logVisible = true
+            logError(String(e))
           })
         },
       },
@@ -826,8 +875,7 @@ function runAction(action: ActionId): void {
           if (saved) notify('✔ 已保存')
         })
         .catch((err) => {
-          store.logs = `保存失败：${err}`
-          store.logVisible = true
+          logError(`保存失败：${err}`)
         })
       break
     case 'saveAs':
@@ -840,8 +888,7 @@ function runAction(action: ActionId): void {
           if (ok) notify('✔ 已另存')
         })
         .catch((err) => {
-          store.logs = `另存为失败：${err}`
-          store.logVisible = true
+          logError(`另存为失败：${err}`)
         })
       break
     case 'toggleSidebar':
@@ -871,10 +918,17 @@ function onWindowFocus(): void {
   refreshGit().catch(() => {})
 }
 
-// 标签与工作区的任何变化 → 防抖持久化会话（仅主窗口实际写盘）
-watch([() => store.root, () => store.activePath, () => store.tabs], () => schedulePersistSession(), {
-  deep: true,
-})
+// 标签与工作区的任何变化 → 防抖持久化会话（仅主窗口实际写盘）。
+// 用 O(标签数) 的签名串代替 deep 监听：deep 每次按键都全量遍历所有标签的 content 大字符串；
+// 签名只看路径 / 长度 / dirty 标志 / mtime，等长编辑由 onInput 与 reload 里的显式补发兜底。
+watch(
+  () =>
+    `${store.root}\u0000${store.activePath}\u0000${store.secondaryPath}\u0000${store.splitView}\u0000${store.contentRevision}\u0000` +
+    store.tabs
+      .map((t) => `${t.path}:${t.content.length}:${t.content === t.savedContent}:${t.mtime ?? ''}`)
+      .join('|'),
+  () => schedulePersistSession(),
+)
 
 // 分屏下从标签栏点到「副窗格正在显示的文件」：把原主窗格文件挪去副窗格，避免两窗格显示同一文件
 watch(
@@ -889,7 +943,11 @@ watch(
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('focus', onWindowFocus)
-  pollTimer = setInterval(() => void pollExternalChanges(), 3000)
+  pollTimer = setInterval(() => {
+    // 窗口最小化 / 被遮挡时跳过：后台轮询无意义还拖慢整机能效
+    if (document.hidden) return
+    void pollExternalChanges()
+  }, 3000)
   // 多窗口：?file= 启动参数 → 以文件所在目录为工作区，单标签打开
   const bootFile = new URLSearchParams(window.location.search).get('file')
   if (bootFile) {
@@ -899,6 +957,11 @@ onMounted(() => {
     void restoreSession().then((ok) => {
       if (ok && store.root) void fillTree()
       schedulePersistSession(0)
+    })
+    // 冷启动文件关联 / 命令行参数：Rust setup 阶段无法 emit 给尚未挂载的前端，
+    // 改为暂存后在这里主动拉取（editor-* 多窗口走 ?file= 启动参数，不拉取）
+    void takePendingOpenPaths().then((paths) => {
+      if (paths.length) void openDroppedPaths(paths)
     })
   }
   // 窗口关闭保护：有未保存内容时拦截，弹三选确认

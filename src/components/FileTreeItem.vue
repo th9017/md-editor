@@ -21,8 +21,8 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
 import type { FileNode } from '../types'
-import { confirmOpenLarge, openTab, store } from '../store'
-import { fileMtimes, readDirShallow, readTextFileChecked, relPath } from '../tauri'
+import { gitChangeMap, openFileAt, store } from '../store'
+import { readDirShallow, relPath } from '../tauri'
 
 defineOptions({ name: 'FileTreeItem' })
 
@@ -41,11 +41,10 @@ const icon = computed(() => {
 /** Git 状态角标：M 修改 / A 新增 / D 删除 / R 重命名 / U 未跟踪 */
 const badge = computed<string | ''>(() => {
   if (!store.gitRepo || props.node.isDir) return ''
-  const rel = relPath(props.node.path, store.root)
-  const hit = store.gitChanges.find((c) => c.path === rel)
+  const hit = gitChangeMap.value.get(relPath(props.node.path, store.root))
   if (!hit) return ''
-  if (hit.code === '??') return 'U'
-  return hit.code
+  if (hit === '??') return 'U'
+  return hit
 })
 
 function onCtx(e: MouseEvent): void {
@@ -62,16 +61,7 @@ async function onClick(): Promise<void> {
     }
     return
   }
-  try {
-    const content = await readTextFileChecked(node.path, node.name)
-    // 超大文件实时渲染会卡顿，先征求用户同意
-    if (!(await confirmOpenLarge(node.name, content))) return
-    const mt = await fileMtimes([node.path])
-    openTab(node.path, content, mt[node.path] ?? null)
-  } catch (e) {
-    store.logs = String(e)
-    store.logVisible = true
-  }
+  await openFileAt(node.path)
 }
 </script>
 

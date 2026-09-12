@@ -66,48 +66,22 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { store } from '../store'
-import { gitRun, gitStatus } from '../tauri'
+import { refreshGit, store } from '../store'
+import { gitRun } from '../tauri'
 
 const emit = defineEmits<{ (e: 'open', path: string): void }>()
 
 const msg = ref('')
 
-onMounted(refresh)
-watch(() => store.root, refresh)
+onMounted(() => void refresh())
+watch(() => store.root, () => void refresh())
 
 async function refresh(): Promise<void> {
   store.gitHistory = []
   store.gitMessage = ''
   if (!store.root) return
-  try {
-    const st = await gitStatus(store.root)
-    store.gitInstalled = true
-    store.gitRepo = st.repo
-    store.gitBranch = st.branch
-    store.gitChanges = st.changes
-    if (st.repo) await loadHistory()
-  } catch (e) {
-    store.gitInstalled = false
-    store.logs = `Git 检测失败：${e}`
-  }
-}
-
-async function loadHistory(): Promise<void> {
-  const out = await gitRun(store.root, [
-    'log', '--pretty=format:%h%x1f%s%x1f%ar', '-n', '20',
-  ])
-  if (out.code !== 0) {
-    store.gitHistory = []
-    return
-  }
-  store.gitHistory = out.stdout
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [hash, subject, date] = line.split('\x1f')
-      return { hash, subject, date: date ?? '' }
-    })
+  // 状态与历史都收敛到 store 侧实现（withHistory=true 时一并拉取提交历史）
+  await refreshGit(true)
 }
 
 async function doCommit(): Promise<void> {

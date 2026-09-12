@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -16,7 +16,9 @@ import type {
 import {
   baseName,
   fileMtimes,
+  gitRun,
   gitStatus,
+  isTextFile,
   kindOf,
   loadSession,
   parentDir,
@@ -218,6 +220,31 @@ export const store = reactive({
 })
 
 // ---------- 标签页 ----------
+
+/** 输出错误到日志面板（各处 store.logs=…; logVisible=true 样板的统一入口） */
+export function logError(msg: string): void {
+  store.logs = msg
+  store.logVisible = true
+}
+
+/** 读磁盘文件并打开为标签：类型检查 + 超大文件确认 + mtime 基线。
+ *  文件树 / 快速打开 / 搜索与 Git 面板 / 系统对话框共用这一条打开路径。返回是否成功打开。 */
+export async function openFileAt(abs: string): Promise<boolean> {
+  try {
+    if (!isTextFile(baseName(abs))) {
+      throw new Error('暂不支持打开该类型文件（仅支持 Markdown 与文本类文件）')
+    }
+    const content = await readTextFile(abs)
+    // 超大文件实时渲染会卡顿，先征求用户同意
+    if (!(await confirmOpenLarge(baseName(abs), content))) return false
+    const mt = await fileMtimes([abs]).catch(() => ({}) as Record<string, number | null>)
+    openTab(abs, content, mt[abs] ?? null)
+    return true
+  } catch (e) {
+    logError(String(e))
+    return false
+  }
+}
 
 export function openTab(path: string, content: string, mtime: number | null = null) {
   const existing = store.tabs.find((t) => t.path === path)
@@ -462,8 +489,7 @@ export async function saveTabAs(tab: Tab): Promise<boolean> {
   const existing = store.tabs.find((t) => t.path === target && t !== tab)
   if (existing) {
     if (existing.content !== existing.savedContent) {
-      store.logs = `「${existing.name}」已在其他标签打开且有未保存更改，已取消覆盖保存`
-      store.logVisible = true
+      logError(`「${existing.name}」已在其他标签打开且有未保存更改，已取消覆盖保存`)
       return false
     }
     await closeTab(target)
@@ -627,8 +653,7 @@ export function scheduleSave(delay = 1200, target?: Tab): void {
           if (store.gitRepo) scheduleGitRefresh()
         })
         .catch((e) => {
-          store.logs = `自动保存失败：${e}`
-          store.logVisible = true
+          logError(`自动保存失败：${e}`)
         })
     }, delay),
   )
@@ -636,7 +661,8 @@ export function scheduleSave(delay = 1200, target?: Tab): void {
 
 // ---------- Git 状态（供状态栏与 Git 面板共享） ----------
 
-export async function refreshGit(): Promise<void> {
+/** Git 状态读取的唯一实现；withHistory=true 时同时拉取最近提交历史（Git 面板用） */
+export async function refreshGit(withHistory = false): Promise<void> {
   if (!store.root) {
     store.gitRepo = false
     store.gitBranch = ''
@@ -649,10 +675,31 @@ export async function refreshGit(): Promise<void> {
     store.gitRepo = st.repo
     store.gitBranch = st.branch
     store.gitChanges = st.changes
-  } catch {
+    if (withHistory && st.repo) await loadGitHistory()
+  } catch (e) {
     store.gitInstalled = false
+    store.logs = `Git 检测失败：${e}`
   }
 }
+
+/** 拉取最近 20 条提交历史 */
+async function loadGitHistory(): Promise<void> {
+  const out = await gitRun(store.root, ['log', '--pretty=format:%h%x1f%s%x1f%ar', '-n', '20'])
+  if (out.code !== 0) {
+    store.gitHistory = []
+    return
+  }
+  store.gitHistory = out.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, subject, date] = line.split('\x1f')
+      return { hash, subject, date: date ?? '' }
+    })
+}
+
+/** path → Git 变更码映射（文件树角标 O(1) 查询，避免每个节点线性扫 gitChanges） */
+export const gitChangeMap = computed(() => new Map(store.gitChanges.map((c) => [c.path, c.code])))
 
 // ---------- 外观与设置 ----------
 

@@ -135,6 +135,11 @@ export async function loadSession(): Promise<string> {
   return await invoke<string>('load_session')
 }
 
+/** 取走并清空首启动暂存的待打开路径（冷启动文件关联 / 命令行参数） */
+export function takePendingOpenPaths(): Promise<string[]> {
+  return invoke<string[]>('take_pending_open_paths')
+}
+
 export async function searchWorkspace(root: string, query: string): Promise<SearchHit[]> {
   return await invoke<SearchHit[]>('search_workspace', { root, query })
 }

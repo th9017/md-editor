@@ -35,7 +35,8 @@ const DOC_CSS = `
   .md-doc hr { border: none; border-top: 2px solid #eceff2; margin: 2em 0; }
 `
 
-function escapeRegExp(s: string): string {
+/** 正则元字符转义（查找替换等拼接 RegExp 前必须过一遍） */
+export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 

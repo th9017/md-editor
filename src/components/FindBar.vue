@@ -70,6 +70,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { store } from '../store'
+import { escapeRegExp } from '../export'
 
 /** 匹配模式：字面量 / 正则 / 全词（三者互斥，同一时刻只有一种生效；大小写为独立开关） */
 type MatchMode = 'literal' | 'regex' | 'word'
@@ -182,10 +183,6 @@ function toggleCase(): void {
 /** 切换匹配模式：开启一个即关闭其他；再次点击已生效的按钮则回到字面量模式 */
 function toggleMode(mode: 'regex' | 'word'): void {
   matchMode.value = matchMode.value === mode ? 'literal' : mode
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function replaceCurrent(): void {

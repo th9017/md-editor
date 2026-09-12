@@ -1,6 +1,6 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { baseName } from './tauri'
-import { store } from './store'
+import { logError } from './store'
 
 /**
  * 在新窗口打开一个文件（Typora 模式：一窗一文件）。
@@ -19,7 +19,6 @@ export function openFileInNewWindow(absPath: string): void {
     center: true,
   })
   win.once('tauri://error', (e: unknown) => {
-    store.logs = `打开新窗口失败：${JSON.stringify((e as { payload?: unknown })?.payload ?? e)}`
-    store.logVisible = true
+    logError(`打开新窗口失败：${JSON.stringify((e as { payload?: unknown })?.payload ?? e)}`)
   })
 }

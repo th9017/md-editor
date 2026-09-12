@@ -93,7 +93,9 @@ function build(mode: MdMode): void {
       setupCaretListeners(mode)
       setupImgFixup()
       fixupImgs()
-      // 打字机开关已开时（新建 / 切文件 / 切模式重建），把光标行立即居中；稍后重试一次防渲染未稳
+      // 打字机开关已开时（新建 / 切文件 / 切模式重建）：先补上下半屏 padding（首尾行才能居中），
+      // 再把光标行立即居中；稍后重试一次防渲染未稳
+      applyTypewriterPadding()
       if (store.typewriter) {
         centerCaretSoon()
         setTimeout(() => centerCaretSoon(), 150)
@@ -125,11 +127,22 @@ function fixupImgs(): void {
   })
 }
 
-/** 在组件根上挂观察器：预览重渲染 / 图片插入等任何 DOM 变化都会触发一次 fixup */
+/** 在组件根上挂观察器：预览重渲染 / 图片插入等 DOM 变化都会触发一次 fixup。
+ *  纯文本打字只产生文本节点变更，直接跳过扫描（旧实现每帧全文档 querySelectorAll）。 */
 function setupImgFixup(): void {
   imgObserver?.disconnect()
   if (!el.value) return
-  imgObserver = new MutationObserver(() => queueFixup())
+  imgObserver = new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        // 元素节点才可能带来 <img>（含其子树）；文本节点/属性变化不扫
+        if (n.nodeType === Node.ELEMENT_NODE) {
+          queueFixup()
+          return
+        }
+      }
+    }
+  })
   imgObserver.observe(el.value, { childList: true, subtree: true })
   fixupImgs()
 }
@@ -537,6 +550,45 @@ function focusBlockEl(): HTMLElement | null {
   return node instanceof HTMLElement ? node : null
 }
 
+/** 打字机模式：给内容区加上下半屏内边距，首行 / 末行也能滚到视口中央。
+ *  参考 Typedown（Muya 封装层）的 padding 方案：没有这段余量时，
+ *  文档首尾的 scrollTop 被钳住，光标行永远到不了中央——表现为中部正常、首尾失效。
+ *  这里按实际编辑区高度计算，不用其 50vh 硬编码（适配 Vditor 的内滚动结构）。 */
+function applyTypewriterPadding(): void {
+  const content = editingEl ?? locateEditingEl(store.mdMode)
+  if (!content) return
+  if (!store.typewriter) {
+    content.style.paddingTop = ''
+    content.style.paddingBottom = ''
+    return
+  }
+  // sv 的 textarea 既是内容也是滚动容器；ir/wysiwyg 的内容是 .vditor-reset，
+  // 滚动发生在其 overflow:auto/scroll 的祖先块上
+  let scroller: HTMLElement | null = null
+  if (content instanceof HTMLTextAreaElement) {
+    scroller = content
+  } else {
+    let node: HTMLElement | null = content.parentElement
+    while (node && node !== document.body) {
+      const oy = getComputedStyle(node).overflowY
+      if (oy === 'auto' || oy === 'scroll') {
+        scroller = node
+        break
+      }
+      node = node.parentElement
+    }
+  }
+  if (!scroller) return
+  const lineHeight = Number.parseFloat(getComputedStyle(content).lineHeight) || 26
+  const pad = Math.max(0, scroller.clientHeight / 2 - lineHeight / 2)
+  content.style.paddingTop = `${pad}px`
+  content.style.paddingBottom = `${pad}px`
+}
+
+function onWindowResize(): void {
+  applyTypewriterPadding()
+}
+
 // ---------- 对外能力（导出 / 外部内容刷新） ----------
 
 defineExpose({
@@ -568,13 +620,23 @@ defineExpose({
 
 // ---------- 生命周期与联动 ----------
 
-onMounted(() => build(store.mdMode))
+onMounted(() => {
+  window.addEventListener('resize', onWindowResize)
+  build(store.mdMode)
+})
 watch(() => store.mdMode, (m) => build(m))
-watch(() => store.theme, () => build(store.mdMode))
+// 主题切换的重建由 App.vue 的 :key（含 theme）驱动，这里不再重复 watch 重建
 watch(() => store.typewriter, (on) => {
+  // 先补 / 清上下半屏 padding 再居中：文档首尾没有这段余量时 scrollTop 被钳住，居中不生效
+  applyTypewriterPadding()
   // 打开开关立即把当前光标行平滑居中一次，否则首次开启毫无反馈
   if (on) centerCaretSoon(true)
 })
+// 字号 / 行距变化会改变行高与滚动容器高度，padding 需要重算
+watch(
+  () => [store.fontSize, store.lineHeight],
+  () => applyTypewriterPadding(),
+)
 watch(
   () => props.revision,
   () => {
@@ -589,6 +651,7 @@ watch(() => props.path, () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
   clearTimeout(outlineTimer)
   cancelAnimationFrame(spyRaf)
   cancelAnimationFrame(typewriterRaf)

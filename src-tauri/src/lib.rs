@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 // Manager：get_webview_window；Emitter：向窗口 emit 事件（Tauri 2 中二者均为 trait）
 use tauri::{Emitter, Manager};
@@ -129,6 +130,16 @@ mod time {
 
 // ---------- 全文搜索 / 文件清单 ----------
 
+/// 头部预览切片的安全终点：不超过 max 字节且不落在多字节字符中间。
+/// 直接 content[..min(len,max)] 是按字节索引，中文字符跨界时 panic，搜索/替换会整体失败。
+fn head_boundary_end(content: &str, max: usize) -> usize {
+    let mut end = content.len().min(max);
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
 fn walk_text_files(root: &Path, max: usize, mut f: impl FnMut(&Path)) {
     let mut stack = vec![root.to_path_buf()];
     let mut count = 0usize;
@@ -166,34 +177,39 @@ async fn search_workspace(root: String, query: String) -> Result<Vec<SearchHit>,
     if !dir.is_dir() {
         return Err(format!("目录不存在：{root}"));
     }
-    let mut hits: Vec<SearchHit> = Vec::new();
-    walk_text_files(&dir, 4000, |p| {
-        if hits.len() >= 200 {
-            return;
-        }
-        let Ok(meta) = fs::metadata(p) else { return };
-        if meta.len() > 1024 * 1024 {
-            return;
-        }
-        let Ok(content) = fs::read_to_string(p) else { return };
-        if content[..content.len().min(1024)].contains('\0') {
-            return;
-        }
-        let path_str = p.to_string_lossy().to_string();
-        for (i, line) in content.lines().enumerate() {
+    // 目录遍历 + 全量读文件是重 IO，放阻塞线程池，不占 async worker
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut hits: Vec<SearchHit> = Vec::new();
+        walk_text_files(&dir, 4000, |p| {
             if hits.len() >= 200 {
                 return;
             }
-            if line.to_lowercase().contains(&query_lc) {
-                hits.push(SearchHit {
-                    path: path_str.clone(),
-                    line_no: i + 1,
-                    line_text: line.chars().take(300).collect(),
-                });
+            let Ok(meta) = fs::metadata(p) else { return };
+            if meta.len() > 1024 * 1024 {
+                return;
             }
-        }
-    });
-    Ok(hits)
+            let Ok(content) = fs::read_to_string(p) else { return };
+            if content[..head_boundary_end(&content, 1024)].contains('\0') {
+                return;
+            }
+            let path_str = p.to_string_lossy().to_string();
+            for (i, line) in content.lines().enumerate() {
+                if hits.len() >= 200 {
+                    return;
+                }
+                if line.to_lowercase().contains(&query_lc) {
+                    hits.push(SearchHit {
+                        path: path_str.clone(),
+                        line_no: i + 1,
+                        line_text: line.chars().take(300).collect(),
+                    });
+                }
+            }
+        });
+        Ok(hits)
+    })
+    .await
+    .map_err(|e| format!("搜索任务异常：{e}"))?
 }
 
 /// 在一行内做大小写不敏感的字面量替换，返回 (新行, 命中数)。
@@ -247,51 +263,56 @@ async fn replace_workspace(
         return Err(format!("目录不存在：{root}"));
     }
     let needle: Vec<char> = query_lc.chars().collect();
-    let mut files: Vec<String> = Vec::new();
-    let mut total: u64 = 0;
-    walk_text_files(&dir, 4000, |p| {
-        let Ok(meta) = fs::metadata(p) else { return };
-        if meta.len() > 1024 * 1024 {
-            return;
-        }
-        let Ok(content) = fs::read_to_string(p) else { return };
-        if content[..content.len().min(1024)].contains(' ') {
-            return;
-        }
-        // split_inclusive 保留每行自己的行尾（'\r' 或 \n），替换后原样拼回，不改变换行风格
-        let mut out = String::with_capacity(content.len());
-        let mut hits_total = 0u32;
-        for seg in content.split_inclusive('\n') {
-            let (text, term) = match seg.strip_suffix('\n') {
-                Some(head) => match head.strip_suffix('\r') {
-                    Some(t) => (t, "\r\n"),
-                    None => (head, "\n"),
-                },
-                None => (seg, ""),
-            };
-            let (newline, hits) = replace_line_ci(text, &needle, &replacement);
-            hits_total += hits;
-            out.push_str(&newline);
-            out.push_str(term);
-        }
-        if hits_total == 0 {
-            return;
-        }
-        if preview {
-            files.push(p.to_string_lossy().to_string());
-            total += hits_total as u64;
-            return;
-        }
+    // 同 search_workspace：重 IO 放阻塞线程池
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut files: Vec<String> = Vec::new();
+        let mut total: u64 = 0;
+        walk_text_files(&dir, 4000, |p| {
+            let Ok(meta) = fs::metadata(p) else { return };
+            if meta.len() > 1024 * 1024 {
+                return;
+            }
+            let Ok(content) = fs::read_to_string(p) else { return };
+            if content[..head_boundary_end(&content, 1024)].contains('\0') {
+                return;
+            }
+            // split_inclusive 保留每行自己的行尾（'\r' 或 \n），替换后原样拼回，不改变换行风格
+            let mut out = String::with_capacity(content.len());
+            let mut hits_total = 0u32;
+            for seg in content.split_inclusive('\n') {
+                let (text, term) = match seg.strip_suffix('\n') {
+                    Some(head) => match head.strip_suffix('\r') {
+                        Some(t) => (t, "\r\n"),
+                        None => (head, "\n"),
+                    },
+                    None => (seg, ""),
+                };
+                let (newline, hits) = replace_line_ci(text, &needle, &replacement);
+                hits_total += hits;
+                out.push_str(&newline);
+                out.push_str(term);
+            }
+            if hits_total == 0 {
+                return;
+            }
+            if preview {
+                files.push(p.to_string_lossy().to_string());
+                total += hits_total as u64;
+                return;
+            }
 
-        if save_snapshot_inner(p, &content).is_err() {
-            return; // 备份失败就不动这个文件
-        }
-        if fs::write(p, &out).is_ok() {
-            files.push(p.to_string_lossy().to_string());
-            total += hits_total as u64;
-        }
-    });
-    Ok(ReplaceOut { files, count: total })
+            if save_snapshot_inner(p, &content).is_err() {
+                return; // 备份失败就不动这个文件
+            }
+            if fs::write(p, &out).is_ok() {
+                files.push(p.to_string_lossy().to_string());
+                total += hits_total as u64;
+            }
+        });
+        Ok(ReplaceOut { files, count: total })
+    })
+    .await
+    .map_err(|e| format!("替换任务异常：{e}"))?
 }
 
 #[tauri::command]
@@ -300,12 +321,16 @@ async fn list_workspace_files(root: String) -> Result<Vec<String>, String> {
     if !dir.is_dir() {
         return Err(format!("目录不存在：{root}"));
     }
-    let mut files: Vec<String> = Vec::new();
-    walk_text_files(&dir, 2000, |p| {
-        files.push(p.to_string_lossy().to_string());
-    });
-    files.sort();
-    Ok(files)
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut files: Vec<String> = Vec::new();
+        walk_text_files(&dir, 2000, |p| {
+            files.push(p.to_string_lossy().to_string());
+        });
+        files.sort();
+        Ok(files)
+    })
+    .await
+    .map_err(|e| format!("列目录任务异常：{e}"))?
 }
 
 // ---------- Git ----------
@@ -443,19 +468,37 @@ async fn save_bg_image(src: String) -> Result<String, String> {
 
 // ---------- 本地历史快照 ----------
 
+/// 快照根目录：只定位不创建。读取类命令不应有写副作用（读快照不应顺手建目录）
+fn history_dir() -> Result<PathBuf, String> {
+    app_data_dir()
+        .map(|d| d.join("history"))
+        .ok_or_else(|| "无法定位应用数据目录".to_string())
+}
+
+/// 定位并确保快照根目录存在（写入类命令用）
 fn history_root() -> Result<PathBuf, String> {
-    let dir = app_data_dir().ok_or("无法定位应用数据目录")?.join("history");
+    let dir = history_dir()?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
     Ok(dir)
 }
 
-/// 把内容写入该路径的本地历史快照（每路径保留最近 50 份）；空内容不存
+/// 把内容写入该路径的本地历史快照（每路径保留最近 50 份）；空内容不存。
+/// 与最近一份快照内容相同则跳过：自动保存频繁触发，避免无变化也全量写盘。
 fn save_snapshot_inner(path: &Path, content: &str) -> Result<(), String> {
     if content.is_empty() {
         return Ok(());
     }
     let dir = history_root()?.join(format!("{:016x}", path_hash(&path.to_string_lossy())));
     fs::create_dir_all(&dir).map_err(|e| format!("创建快照目录失败：{e}"))?;
+    // 快照文件名是时间戳，按文件名取最大即最近一份
+    let latest = fs::read_dir(&dir)
+        .map(|it| it.flatten().map(|e| e.path()).filter(|p| p.is_file()).max())
+        .unwrap_or(None);
+    if let Some(latest) = latest {
+        if fs::read(&latest).map(|b| b == content.as_bytes()).unwrap_or(false) {
+            return Ok(());
+        }
+    }
     let file = dir.join(format!("{}.md", now_stamp()));
     fs::write(&file, content).map_err(|e| format!("写入快照失败：{e}"))?;
     // 只保留最近 50 份
@@ -479,7 +522,7 @@ async fn save_snapshot(path: String, content: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_snapshots(path: String) -> Result<Vec<Snapshot>, String> {
-    let dir = history_root()?.join(format!("{:016x}", path_hash(&path)));
+    let dir = history_dir()?.join(format!("{:016x}", path_hash(&path)));
     let mut snaps: Vec<Snapshot> = Vec::new();
     if let Ok(entries) = fs::read_dir(&dir) {
         for e in entries.flatten() {
@@ -507,7 +550,7 @@ async fn list_snapshots(path: String) -> Result<Vec<Snapshot>, String> {
 
 #[tauri::command]
 async fn read_snapshot_file(file: String) -> Result<String, String> {
-    let root = history_root()?;
+    let root = history_dir()?;
     let p = PathBuf::from(&file);
     let canonical = p.canonicalize().map_err(|e| format!("路径无效：{e}"))?;
     if !canonical.starts_with(&root) {
@@ -528,11 +571,14 @@ fn data_dir() -> Result<String, String> {
 
 /// 保存会话：把内容原样写入「数据目录/session.json」。
 /// 数据目录与 data_dir 命令同一套解析（含便携模式）；父目录不存在则先创建。
+/// 原子写：先写临时文件再改名覆盖，中途崩溃不会留下半截 session.json。
 #[tauri::command]
 async fn save_session(content: String) -> Result<(), String> {
     let dir = app_data_dir().ok_or("无法定位应用数据目录")?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
-    fs::write(dir.join("session.json"), content).map_err(|e| format!("写入会话失败：{e}"))
+    let tmp = dir.join("session.json.tmp");
+    fs::write(&tmp, content).map_err(|e| format!("写入会话失败：{e}"))?;
+    fs::rename(&tmp, dir.join("session.json")).map_err(|e| format!("写入会话失败：{e}"))
 }
 
 /// 读取会话：文件不存在或读取失败一律返回空字符串（会话丢失不致命，不让前端报错）
@@ -547,7 +593,7 @@ async fn load_session() -> String {
 
 /// 判断命令行参数是否是要交给主窗口打开的路径：
 /// 必须真实存在；文件还要求扩展名属于可编辑文本类型（TEXT_EXTS），目录则直接放行。
-/// 与单实例插件回调、首次启动 setup 共用同一套标准。
+/// 与单实例插件回调、首启动参数暂存共用同一套标准。
 fn is_openable_arg(arg: &str) -> bool {
     let p = Path::new(arg);
     if p.is_dir() {
@@ -558,6 +604,8 @@ fn is_openable_arg(arg: &str) -> bool {
 
 /// 把启动参数里筛出的文件/目录路径转发给主窗口：
 /// 事件名固定 open-paths，payload 为字符串数组。主窗口不存在时静默丢弃。
+/// 仅供单实例插件回调使用（此时前端监听必然已就绪）；
+/// 首次启动走 take_pending_open_paths 暂存拉取，见下方说明。
 fn forward_open_paths(app: &tauri::AppHandle, args: &[String]) {
     let paths: Vec<String> = args.iter().filter(|a| is_openable_arg(a)).cloned().collect();
     if paths.is_empty() {
@@ -566,6 +614,21 @@ fn forward_open_paths(app: &tauri::AppHandle, args: &[String]) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("open-paths", &paths);
     }
+}
+
+/// 首启动参数暂存：setup 阶段前端尚未注册 open-paths 监听，emit 会静默丢失
+/// （冷启动文件关联 / 命令行带参不打开的根因）。路径先存这里，
+/// 主窗口前端挂载后经 take_pending_open_paths 主动拉取，时序不再敏感。
+struct PendingOpenPaths(Mutex<Vec<String>>);
+
+/// 取走并清空暂存的待打开路径（仅主窗口前端在挂载后调用一次）
+#[tauri::command]
+fn take_pending_open_paths(state: tauri::State<PendingOpenPaths>) -> Vec<String> {
+    state
+        .0
+        .lock()
+        .map(|mut p| std::mem::take(&mut *p))
+        .unwrap_or_default()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -579,15 +642,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(PendingOpenPaths(Mutex::new(Vec::new())))
         .setup(|app| {
             // 首次启动（自身即主实例）：解析自身 argv（跳过第 0 个程序路径），
-            // 与单实例回调走完全相同的过滤与转发逻辑。
+            // 过滤出可打开的路径暂存，等主窗口前端挂载后经 take_pending_open_paths 拉取。
+            // 这里不能 emit：前端尚未注册 open-paths 监听，事件会静默丢失（冷启动文件关联 bug）。
             // 用 args_os + to_string_lossy 而非 args()：中文/异常字符路径不 panic（见 AGENTS.md 陷阱 8）
             let args: Vec<String> = std::env::args_os()
                 .skip(1)
                 .map(|a| a.to_string_lossy().to_string())
                 .collect();
-            forward_open_paths(app.handle(), &args);
+            let paths: Vec<String> = args.iter().filter(|a| is_openable_arg(a)).cloned().collect();
+            if !paths.is_empty() {
+                if let Ok(mut pending) = app.state::<PendingOpenPaths>().0.lock() {
+                    pending.extend(paths);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -604,7 +674,41 @@ pub fn run() {
             data_dir,
             save_session,
             load_session,
+            take_pending_open_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：头部预览切片不得切进多字节字符内部（v0.6.x 直接按字节切片会 panic）
+    #[test]
+    fn head_boundary_end_never_splits_char() {
+        // 341 个中文字符 = 1023 字节，下一个字符的字节区间跨过 1024
+        let crafted = "中".repeat(341) + "文字";
+        assert_eq!(crafted.len(), 1029);
+        let end = head_boundary_end(&crafted, 1024);
+        assert!(crafted.is_char_boundary(end));
+        assert_eq!(end, 1023);
+    }
+
+    /// 回归：对「头部 1KB 恰好切进中文字符」的文件执行全文搜索，应正常命中而非 panic
+    #[test]
+    fn search_workspace_survives_cjk_head_boundary() {
+        let dir = std::env::temp_dir().join("mdtex-test-search-cjk");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let body = "中".repeat(341) + "蓝鲸量子粒子号。更多正文内容。\n第二行也有蓝鲸。\n";
+        fs::write(dir.join("a.md"), &body).unwrap();
+        let hits = tauri::async_runtime::block_on(search_workspace(
+            dir.to_string_lossy().to_string(),
+            "蓝鲸".to_string(),
+        ))
+        .expect("搜索不应失败");
+        assert!(hits.len() >= 2, "应命中两行，实际 {} 条", hits.len());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
