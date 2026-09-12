@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="store.showFindBar && store.active" class="fb-wrap">
+    <div v-if="store.showFindBar && store.focusedTab" class="fb-wrap">
       <div class="fb-bar">
         <div class="fb-row">
           <input
@@ -116,7 +116,7 @@ const stepDisabled = computed(() => matchMode.value !== 'literal')
 
 const countText = computed(() => {
   const q = query.value
-  const tab = store.active
+  const tab = store.focusedTab
   if (!q || !tab) return ''
   const c = compiled.value
   // 非法正则：计为 0 处，由面板内的「正则表达式无效」提示说明原因
@@ -206,7 +206,7 @@ function replaceCurrent(): void {
 }
 
 function replaceAll(): void {
-  const tab = store.active
+  const tab = store.focusedTab
   const q = query.value
   const r = replacement.value
   if (!tab || !q) return

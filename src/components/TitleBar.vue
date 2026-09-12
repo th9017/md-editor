@@ -4,10 +4,21 @@
       <span class="logo" data-tauri-drag-region />
       <span class="app-name" data-tauri-drag-region>MD 编辑器</span>
       <span class="divider" data-tauri-drag-region />
-      <span class="file-name" data-tauri-drag-region>{{ store.active?.name ?? '' }}</span>
+      <span class="file-name" data-tauri-drag-region>{{ store.focusedTab?.name ?? '' }}</span>
       <span v-if="dirty" class="dirty-dot" title="未保存" />
     </div>
     <div class="win-btns">
+      <button
+        type="button"
+        class="win-btn"
+        :title="store.sidebarCollapsed ? '展开侧栏（Ctrl+B）' : '收起侧栏（Ctrl+B）'"
+        @click="toggleSidebarCollapsed()"
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1">
+          <rect x="2.5" y="3.5" width="11" height="9" rx="1" />
+          <line x1="6.5" y1="3.5" x2="6.5" y2="12.5" />
+        </svg>
+      </button>
       <button type="button" class="win-btn" title="最小化" @click="appWindow.minimize()">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
           <line x1="3.5" y1="8" x2="12.5" y2="8" />
@@ -31,12 +42,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { store } from '../store'
+import { store, toggleSidebarCollapsed } from '../store'
 
 const appWindow = getCurrentWindow()
 
 const dirty = computed(() => {
-  const tab = store.active
+  const tab = store.focusedTab
   return !!tab && tab.content !== tab.savedContent
 })
 

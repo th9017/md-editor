@@ -7,15 +7,18 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { scheduleSave, store } from '../store'
+import { store } from '../store'
 import { hljsStyle, isDarkTheme } from '../theme'
 import { createFolder, joinPath, writeBinaryFile } from '../tauri'
 import type { Heading, MdMode } from '../types'
 
 type VditorOptions = ConstructorParameters<typeof Vditor>[1]
 
-const props = defineProps<{ path: string; value: string; revision?: number }>()
+const props = defineProps<{ path: string; value: string; revision?: number; focused?: boolean }>()
 const emit = defineEmits<{ (e: 'update', value: string): void }>()
+
+/** 双栏分屏下，非聚焦窗格不写共享的大纲状态（store.outline/activeHeading 只属于聚焦窗格） */
+const focused = (): boolean => props.focused !== false
 
 /** 精简工具栏：去掉录音 / 重复导出入口 / 帮助等噪音项 */
 const TOOLBAR = [
@@ -74,7 +77,6 @@ function build(mode: MdMode): void {
     },
     input: (value: string) => {
       emit('update', deCorruptAssetUrls(value))
-      scheduleSave()
       parseOutlineSoon(value)
       onCaretActivity()
       queueFixup()
@@ -210,6 +212,8 @@ function parseOutlineSoon(content: string): void {
 }
 
 function parseOutline(content: string): void {
+  // 非聚焦窗格不写共享大纲（大纲面板跟随聚焦窗格）
+  if (!focused()) return
   const lines = content.split('\n')
   const headings: Heading[] = []
   let inCode = false
@@ -269,6 +273,7 @@ function onScroll(): void {
 }
 
 function syncActiveHeading(element: HTMLElement): void {
+  if (!focused()) return
   const text = element.textContent?.trim() ?? ''
   const heading = store.outline.find((h) => h.text === text)
   if (heading) store.activeHeading = String(heading.line)

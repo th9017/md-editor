@@ -114,6 +114,10 @@
           <input type="checkbox" :checked="store.focusMode" @change="onFocusMode" />
           <span>专注模式</span>
         </label>
+        <label class="check-row">
+          <input type="checkbox" :checked="store.vimMode" @change="onVim" />
+          <span>Vim 模式（纯文本编辑器）</span>
+        </label>
       </section>
 
       <!-- 快捷键 -->
@@ -158,6 +162,7 @@ import {
   setKeybinding,
   setTheme,
   setTypewriter,
+  setVimMode,
   store,
   type ActionId,
 } from '../store'
@@ -217,6 +222,10 @@ function onBlur(e: Event): void {
 
 function onAutoSave(e: Event): void {
   setAutoSave(checkedOf(e))
+}
+
+function onVim(e: Event): void {
+  setVimMode(checkedOf(e))
 }
 
 function onTypewriter(e: Event): void {

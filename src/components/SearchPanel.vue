@@ -19,6 +19,13 @@
           />
         </div>
 
+        <div class="replace-row">
+          <input v-model="r" class="replace-input" type="text" placeholder="替换为…" @keydown.enter="replaceAll" />
+          <button class="replace-btn" :disabled="!q.trim() || replaceBusy" title="在整个工作区中替换全部匹配（大小写不敏感，自动备份历史）" @click="replaceAll">
+            全部替换
+          </button>
+        </div>
+
         <div v-if="store.searchBusy" class="placeholder">搜索中…</div>
         <div v-else-if="q.trim() && !groups.length" class="placeholder">无匹配结果</div>
 
@@ -53,13 +60,18 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { store } from '../store'
+import { replaceAllInWorkspace, store } from '../store'
 import { baseName, searchWorkspace } from '../tauri'
 import type { SearchHit } from '../types'
 
-const emit = defineEmits<{ (e: 'open', path: string): void }>()
+const emit = defineEmits<{
+  (e: 'open', path: string): void
+  (e: 'replaced', msg: string): void
+}>()
 
 const q = ref('')
+const r = ref('')
+const replaceBusy = ref(false)
 let timer: ReturnType<typeof setTimeout> | undefined
 
 const groups = computed(() => {
@@ -95,6 +107,24 @@ async function runNow(): Promise<void> {
     store.logVisible = true
   } finally {
     store.searchBusy = false
+  }
+}
+
+/** 跨文件全部替换：确认弹窗与打开标签同步都在 store 里完成，这里只管触发与刷新列表 */
+async function replaceAll(): Promise<void> {
+  if (replaceBusy.value || !store.root || !q.value.trim()) return
+  replaceBusy.value = true
+  try {
+    const out = await replaceAllInWorkspace(q.value.trim(), r.value)
+    if (out) {
+      emit('replaced', `✔ 已在 ${out.files} 个文件中替换 ${out.count} 处`)
+      await runNow()
+    }
+  } catch (e) {
+    store.logs = `替换失败：${e}`
+    store.logVisible = true
+  } finally {
+    replaceBusy.value = false
   }
 }
 
@@ -156,6 +186,36 @@ function segments(line: string): { t: string; hit: boolean }[] {
 
 .search-input:focus {
   border-color: var(--accent);
+}
+
+.replace-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.replace-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.replace-input:focus {
+  border-color: var(--accent);
+}
+
+.replace-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 4px 10px;
 }
 
 .hit-file {

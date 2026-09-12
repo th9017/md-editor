@@ -11,7 +11,7 @@ import {
   remove,
 } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
-import type { FileNode, GitOut, GitStatus, SearchHit, Snapshot } from './types'
+import type { FileNode, GitOut, GitStatus, ReplaceOut, SearchHit, Snapshot } from './types'
 
 /** 弹出系统对话框选择一个文件夹，取消时返回 null */
 export async function pickFolder(): Promise<string | null> {
@@ -137,6 +137,16 @@ export async function loadSession(): Promise<string> {
 
 export async function searchWorkspace(root: string, query: string): Promise<SearchHit[]> {
   return await invoke<SearchHit[]>('search_workspace', { root, query })
+}
+
+/** 跨文件全文替换（preview=true 只统计；执行时 Rust 侧逐文件先存本地历史快照） */
+export async function replaceWorkspace(
+  root: string,
+  query: string,
+  replacement: string,
+  preview: boolean,
+): Promise<ReplaceOut> {
+  return await invoke<ReplaceOut>('replace_workspace', { root, query, replacement, preview })
 }
 
 export async function listWorkspaceFiles(root: string): Promise<string[]> {

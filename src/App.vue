@@ -5,9 +5,9 @@
     <div class="main">
       <ActivityRail />
 
-      <aside class="sidebar">
+      <aside class="sidebar" :class="{ collapsed: store.sidebarCollapsed }">
         <FileTree v-if="store.sidebarView === 'files'" ref="treeRef" @new-file="startNewFile" @new-folder="startNewFolder" />
-        <SearchPanel v-else-if="store.sidebarView === 'search'" @open="openPath" />
+        <SearchPanel v-else-if="store.sidebarView === 'search'" @open="openPath" @replaced="notify" />
         <GitPanel v-else-if="store.sidebarView === 'git'" @open="openPath" />
         <OutlinePanel v-else-if="store.sidebarView === 'outline'" @jump="jumpTo" />
         <RecentPanel v-else-if="store.sidebarView === 'recent'" @open-folder="openRecentFolder" @open-file="openRecentFile" />
@@ -16,7 +16,7 @@
 
       <section class="center">
         <div class="topbar">
-          <template v-if="store.active?.kind === 'md'">
+          <template v-if="store.focusedTab?.kind === 'md'">
             <div class="seg">
               <button :class="{ on: store.mdMode === 'wysiwyg' }" @click="setMdMode('wysiwyg')">所见即所得</button>
               <button :class="{ on: store.mdMode === 'ir' }" @click="setMdMode('ir')">即时渲染</button>
@@ -43,8 +43,8 @@
           <div v-if="store.bgImage && store.bgUrl" class="editor-dim" />
 
           <div class="editor-area">
-            <div v-if="store.active?.externalChanged" class="ext-banner">
-              <span>「{{ store.active.name }}」已在外部被修改。</span>
+            <div v-if="store.focusedTab?.externalChanged" class="ext-banner">
+              <span>「{{ store.focusedTab.name }}」已在外部被修改。</span>
               <span class="ext-actions">
                 <button class="outline" @click="reloadExternal">重新加载</button>
                 <button class="outline" @click="keepMine">保留我的版本</button>
@@ -64,6 +64,70 @@
                 <li>Ctrl+P 快速打开 · Ctrl+F 查找替换 · Ctrl+Shift+P 命令面板</li>
               </ul>
             </div>
+            <template v-else-if="store.splitView">
+              <div class="panes">
+                <div
+                  class="pane"
+                  :class="{ focused: store.focusedPane === 'primary' }"
+                  @mousedown="setFocusedPane('primary')"
+                >
+                  <MarkdownEditor
+                    v-if="store.active.kind === 'md'"
+                    ref="mdApi"
+                    :key="'p' + store.active.path + store.theme"
+                    :path="store.active.path"
+                    :value="store.active.content"
+                    :revision="store.contentRevision"
+                    :focused="store.focusedPane !== 'secondary'"
+                    @update="onInputPrimary"
+                  />
+                  <TextEditor
+                    v-else-if="store.active.kind === 'text'"
+                    :key="'tp' + store.active.path + store.theme + textTick"
+                    :path="store.active.path"
+                    :value="store.active.content"
+                    :revision="store.contentRevision"
+                    :vim="store.vimMode"
+                    @update="onInputPrimary"
+                  />
+                  <div v-else class="pane-empty">该文件类型暂不支持编辑</div>
+                </div>
+                <div class="pane-divider" />
+                <div
+                  class="pane"
+                  :class="{ focused: store.focusedPane === 'secondary' }"
+                  @mousedown="setFocusedPane('secondary')"
+                >
+                  <div class="pane-head">
+                    <span class="pane-title" :title="store.secondary?.path">{{ store.secondary?.name ?? '副窗格' }}</span>
+                    <button class="outline" @click="toggleSplitView()">退出分屏</button>
+                  </div>
+                  <template v-if="store.secondary">
+                    <MarkdownEditor
+                      v-if="store.secondary.kind === 'md'"
+                      ref="mdApiSec"
+                      :key="'s' + store.secondary.path + store.theme"
+                      :path="store.secondary.path"
+                      :value="store.secondary.content"
+                      :revision="store.contentRevision"
+                      :focused="store.focusedPane === 'secondary'"
+                      @update="onInputSecondary"
+                    />
+                    <TextEditor
+                      v-else-if="store.secondary.kind === 'text'"
+                      :key="'ts' + store.secondary.path + store.theme + textTick"
+                      :path="store.secondary.path"
+                      :value="store.secondary.content"
+                      :revision="store.contentRevision"
+                      :vim="store.vimMode"
+                      @update="onInputSecondary"
+                    />
+                    <div v-else class="pane-empty">该文件类型暂不支持编辑</div>
+                  </template>
+                  <div v-else class="pane-empty">在标签页右键选择「在右窗格打开」<br />开启另一个文件同时编辑</div>
+                </div>
+              </div>
+            </template>
             <template v-else>
               <MarkdownEditor
                 v-if="store.active.kind === 'md'"
@@ -72,14 +136,17 @@
                 :path="store.active.path"
                 :value="store.active.content"
                 :revision="store.contentRevision"
-                @update="onInput"
+                :focused="true"
+                @update="onInputPrimary"
               />
               <TextEditor
                 v-else-if="store.active.kind === 'text'"
                 :key="'t' + store.active.path + store.theme + textTick"
                 :path="store.active.path"
                 :value="store.active.content"
-                @update="onInput"
+                :revision="store.contentRevision"
+                :vim="store.vimMode"
+                @update="onInputPrimary"
               />
               <div v-else class="welcome">
                 <p>该文件类型暂不支持编辑（仅支持 Markdown 与文本类文件）</p>
@@ -99,7 +166,8 @@
       </span>
       <span class="spacer" />
       <span class="flash">{{ flash }}</span>
-      <span v-if="store.active">
+      <span v-if="store.vimMode && store.focusedTab?.kind === 'text'" class="vim-badge" title="Vim 模式（纯文本编辑器）">VIM</span>
+      <span v-if="store.focusedTab">
         <template v-if="stats">{{ stats.chars }} 字 · {{ stats.words }} 词 · 约 {{ stats.minutes }} 分钟 · </template>
         <span :class="{ dirty: dirty }">{{ dirty ? '未保存' : '已保存' }}</span>
       </span>
@@ -147,6 +215,7 @@ import {
   confirmOpenLarge,
   isUntitled,
   newUntitledDoc,
+  openInSecondaryPane,
   openTab,
   refreshGit,
   restoreSession,
@@ -154,13 +223,18 @@ import {
   saveTab,
   saveTabAs,
   schedulePersistSession,
+  scheduleSave,
   setAutoSave,
+  setFocusedPane,
   setFocusMode,
   setMdMode,
   setSidebarView,
   setTheme,
   setTypewriter,
+  setVimMode,
   store,
+  toggleSidebarCollapsed,
+  toggleSplitView,
   type ActionId,
 } from './store'
 import {
@@ -208,11 +282,19 @@ interface CtxItem {
 }
 
 const treeRef = ref<InstanceType<typeof FileTree>>()
-const mdApi = ref<{
+
+interface MdApi {
   getHtmlPortable: () => string
   refreshValue: () => void
   jumpTo: (h: Heading) => void
-} | null>(null)
+}
+const mdApi = ref<MdApi | null>(null)
+const mdApiSec = ref<MdApi | null>(null)
+
+/** 聚焦窗格的 Markdown 编辑器实例（大纲跳转 / 导出都作用于聚焦窗格） */
+function focusedMdApi(): MdApi | null {
+  return store.focusedPane === 'secondary' ? mdApiSec.value : mdApi.value
+}
 
 const ctx = ref<{ x: number; y: number; items: CtxItem[] } | null>(null)
 const modal = ref<{
@@ -229,11 +311,14 @@ const showCloseConfirm = ref(false)
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 let unlistenFns: Array<() => void> = []
 
-const dirty = computed(() => !!store.active && store.active.content !== store.active.savedContent)
+const dirty = computed(() => {
+  const tab = store.focusedTab
+  return !!tab && tab.content !== tab.savedContent
+})
 
 /** 中英混合字数统计：去空白字符数、中文按字 + 英文按词、预计阅读时长 */
 const stats = computed(() => {
-  const tab = store.active
+  const tab = store.focusedTab
   if (!tab || tab.kind !== 'md') return null
   const text = tab.content
   const chars = text.replace(/\s/g, '').length
@@ -355,31 +440,43 @@ async function fillTree(): Promise<void> {
   refreshGit().catch(() => {})
 }
 
-function onInput(value: string): void {
+/** 主窗格输入：写入活动标签并调度它自己的自动保存 */
+function onInputPrimary(value: string): void {
   const tab = store.active
-  if (tab) tab.content = value
+  if (!tab) return
+  tab.content = value
+  scheduleSave(1200, tab)
+}
+
+/** 副窗格输入：写入副窗格标签（绝不能写进活动标签，否则分屏下会互相覆盖文件） */
+function onInputSecondary(value: string): void {
+  const tab = store.secondary
+  if (!tab) return
+  tab.content = value
+  scheduleSave(1200, tab)
 }
 
 // ---------- 大纲 ----------
 
 function jumpTo(h: Heading): void {
-  mdApi.value?.jumpTo(h)
+  focusedMdApi()?.jumpTo(h)
 }
 
 // ---------- 查找 / 命令面板 / 快速打开 ----------
 
 function openFind(): void {
-  if (!store.active) return
-  if (store.active.kind === 'md') store.showFindBar = true
+  const tab = store.focusedTab
+  if (!tab) return
+  if (tab.kind === 'md') store.showFindBar = true
   else notify('文本文件请直接按 Ctrl+F 使用内置搜索')
 }
 
 // ---------- 导出 ----------
 
 async function currentHtml(): Promise<string | null> {
-  const tab = store.active
+  const tab = store.focusedTab
   if (!tab || tab.kind !== 'md') return null
-  const body = mdApi.value?.getHtmlPortable() ?? ''
+  const body = focusedMdApi()?.getHtmlPortable() ?? ''
   if (!body.trim()) {
     notify('未能获取渲染内容')
     return null
@@ -396,7 +493,7 @@ async function currentHtml(): Promise<string | null> {
 
 async function doExport(kind: 'html' | 'pdf' | 'copy'): Promise<void> {
   exportOpen.value = false
-  const tab = store.active
+  const tab = store.focusedTab
   if (!tab) return
   const html = await currentHtml()
   if (!html) return
@@ -446,7 +543,7 @@ async function pollExternalChanges(): Promise<void> {
 }
 
 async function reloadExternal(): Promise<void> {
-  const tab = store.active
+  const tab = store.focusedTab
   if (!tab) return
   try {
     const content = await readTextFile(tab.path)
@@ -466,7 +563,7 @@ async function reloadExternal(): Promise<void> {
 }
 
 function keepMine(): void {
-  const tab = store.active
+  const tab = store.focusedTab
   if (!tab) return
   tab.externalChanged = false
   tab.mtime = Date.now()
@@ -620,6 +717,7 @@ function onTabCtx(x: number, y: number, tab: import('./types').Tab): void {
   const untitled = isUntitled(tab.path)
   const items: CtxItem[] = []
   if (!untitled) items.push({ label: '在新窗口打开', action: () => openFileInNewWindow(tab.path) })
+  items.push({ label: '在右窗格打开', action: () => openInSecondaryPane(tab.path) })
   items.push(
     {
       label: '另存为',
@@ -668,7 +766,7 @@ const commands = computed<CommandItem[]>(() => [
     label: '在新窗口打开当前文件',
     keywords: 'new window',
     run: () => {
-      if (store.active) openFileInNewWindow(store.active.path)
+      if (store.focusedTab) openFileInNewWindow(store.focusedTab.path)
       else notify('先打开一个文件')
     },
   },
@@ -691,6 +789,9 @@ const commands = computed<CommandItem[]>(() => [
   { id: 'typewriter', label: (store.typewriter ? '关闭' : '开启') + '打字机模式', run: () => setTypewriter(!store.typewriter) },
   { id: 'focus', label: (store.focusMode ? '关闭' : '开启') + '专注模式', run: () => setFocusMode(!store.focusMode) },
   { id: 'autosave', label: (store.autoSave ? '关闭' : '开启') + '自动保存', run: () => setAutoSave(!store.autoSave) },
+  { id: 'vim', label: (store.vimMode ? '关闭' : '开启') + 'Vim 模式（纯文本编辑器）', keywords: 'vim modal edit', run: () => setVimMode(!store.vimMode) },
+  { id: 'split', label: (store.splitView ? '关闭' : '开启') + '双栏分屏', keywords: 'split pane 双栏', run: () => toggleSplitView() },
+  { id: 'collapse-sidebar', label: (store.sidebarCollapsed ? '展开' : '收起') + '侧栏', keywords: 'sidebar collapse 侧栏', run: () => toggleSidebarCollapsed() },
   { id: 'view-git', label: '显示 Git 面板', run: () => setSidebarView('git') },
   { id: 'view-search', label: '显示全文搜索', run: () => setSidebarView('search') },
   { id: 'view-outline', label: '显示大纲', run: () => setSidebarView('outline') },
@@ -730,11 +831,11 @@ function runAction(action: ActionId): void {
         })
       break
     case 'saveAs':
-      if (!store.active) {
+      if (!store.focusedTab) {
         notify('先打开一个文件')
         break
       }
-      saveTabAs(store.active)
+      saveTabAs(store.focusedTab)
         .then((ok) => {
           if (ok) notify('✔ 已另存')
         })
@@ -742,6 +843,13 @@ function runAction(action: ActionId): void {
           store.logs = `另存为失败：${err}`
           store.logVisible = true
         })
+      break
+    case 'toggleSidebar':
+      toggleSidebarCollapsed()
+      break
+    case 'toggleSplit':
+      if (store.splitView || store.tabs.length >= 2) toggleSplitView()
+      else notify('至少打开两个文件才能分屏')
       break
   }
 }
@@ -751,7 +859,7 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') exportOpen.value = false
   const action = actionForCombo(comboFromEvent(e))
   // 文本文件的查找交给 CodeMirror 内置搜索
-  if (!action || (action === 'find' && store.active?.kind !== 'md')) return
+  if (!action || (action === 'find' && store.focusedTab?.kind !== 'md')) return
   e.preventDefault()
   runAction(action)
 }
@@ -767,6 +875,16 @@ function onWindowFocus(): void {
 watch([() => store.root, () => store.activePath, () => store.tabs], () => schedulePersistSession(), {
   deep: true,
 })
+
+// 分屏下从标签栏点到「副窗格正在显示的文件」：把原主窗格文件挪去副窗格，避免两窗格显示同一文件
+watch(
+  () => store.activePath,
+  (now, before) => {
+    if (store.splitView && now && now === store.secondaryPath && before && before !== now) {
+      store.secondaryPath = before
+    }
+  },
+)
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
@@ -834,6 +952,12 @@ onBeforeUnmount(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  transition: width 0.15s ease;
+}
+
+.sidebar.collapsed {
+  width: 0;
+  border-right: none;
 }
 
 .center {
@@ -912,6 +1036,76 @@ onBeforeUnmount(() => {
   flex-direction: column;
   position: relative;
   z-index: 1;
+}
+
+/* 双栏分屏 */
+.panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 聚焦窗格顶部细高亮条 */
+.pane.focused {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.pane-divider {
+  width: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pane-head button {
+  font-size: 11px;
+  padding: 1px 8px;
+}
+
+.pane-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px;
+  text-align: center;
+  line-height: 2;
+}
+
+.vim-badge {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .ext-banner {

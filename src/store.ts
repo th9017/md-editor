@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
-import { writeTextFile } from '@tauri-apps/plugin-fs'
+import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   FileNode,
@@ -22,6 +22,7 @@ import {
   parentDir,
   pickSaveFile,
   readDirShallow,
+  replaceWorkspace,
   saveSession,
   saveSnapshot,
 } from './tauri'
@@ -52,7 +53,16 @@ function saveList(key: string, list: string[]) {
 
 // ---------- 快捷键 ----------
 
-export type ActionId = 'palette' | 'quickOpen' | 'find' | 'newDoc' | 'openFile' | 'save' | 'saveAs'
+export type ActionId =
+  | 'palette'
+  | 'quickOpen'
+  | 'find'
+  | 'newDoc'
+  | 'openFile'
+  | 'save'
+  | 'saveAs'
+  | 'toggleSidebar'
+  | 'toggleSplit'
 
 /** 应用级全局动作清单（Vditor / CodeMirror 编辑器内置键位不在此列，无法改绑） */
 export const ACTIONS: { id: ActionId; label: string }[] = [
@@ -63,6 +73,8 @@ export const ACTIONS: { id: ActionId; label: string }[] = [
   { id: 'openFile', label: '打开文件' },
   { id: 'save', label: '保存' },
   { id: 'saveAs', label: '另存为' },
+  { id: 'toggleSidebar', label: '收起 / 展开侧栏' },
+  { id: 'toggleSplit', label: '开启 / 关闭双栏分屏' },
 ]
 
 export const DEFAULT_KEYMAP: Record<ActionId, string> = {
@@ -73,6 +85,8 @@ export const DEFAULT_KEYMAP: Record<ActionId, string> = {
   openFile: 'Ctrl+O',
   save: 'Ctrl+S',
   saveAs: 'Ctrl+Shift+S',
+  toggleSidebar: 'Ctrl+B',
+  toggleSplit: 'Ctrl+\\',
 }
 
 /** 读 localStorage 的用户键位覆盖，并与默认表合并（防止旧数据缺项） */
@@ -149,6 +163,16 @@ export const store = reactive({
   imageFolder: localStorage.getItem('mdtex.imageFolder') || 'assets',
   typewriter: loadFlag<'on' | 'off'>('mdtex.typewriter', 'off') === 'on',
   focusMode: loadFlag<'on' | 'off'>('mdtex.focusMode', 'off') === 'on',
+  /** Vim 模式（仅作用于 CodeMirror 纯文本编辑器；Vditor 无 Vim 支持） */
+  vimMode: loadFlag<'on' | 'off'>('mdtex.vimMode', 'off') === 'on',
+  /** 侧栏收起（每窗口独立，与 sidebarView 同策略） */
+  sidebarCollapsed: loadFlag<'on' | 'off'>('mdtex.sidebarCollapsed', 'off') === 'on',
+  // 双栏分屏
+  splitView: false,
+  /** 副窗格显示的标签路径（'' = 副窗格空置） */
+  secondaryPath: '',
+  /** 分屏下当前聚焦的窗格：保存/查找/导出/大纲/状态栏都跟随它 */
+  focusedPane: 'primary' as 'primary' | 'secondary',
   // 快捷键绑定（mdtex.keymap 覆盖默认表）
   keymap: loadKeymap(),
   // 大纲
@@ -182,6 +206,15 @@ export const store = reactive({
   get active(): Tab | undefined {
     return this.tabs.find((t) => t.path === this.activePath)
   },
+
+  get secondary(): Tab | undefined {
+    return this.tabs.find((t) => t.path === this.secondaryPath)
+  },
+
+  /** 分屏下聚焦窗格对应的标签；未分屏时恒等于主窗格（active） */
+  get focusedTab(): Tab | undefined {
+    return this.focusedPane === 'secondary' ? this.secondary : this.active
+  },
 })
 
 // ---------- 标签页 ----------
@@ -213,6 +246,11 @@ export async function closeTab(path: string): Promise<void> {
   if (store.activePath === path) {
     const next = store.tabs[idx] ?? store.tabs[idx - 1]
     store.activePath = next?.path ?? ''
+  }
+  if (store.secondaryPath === path) {
+    // 副窗格的标签被关闭：换成剩余标签里第一个非活动标签，没有则副窗格空置
+    store.secondaryPath = store.tabs.find((t) => t.path !== store.activePath)?.path ?? ''
+    if (store.focusedPane === 'secondary' && !store.secondaryPath) store.focusedPane = 'primary'
   }
 }
 
@@ -287,6 +325,8 @@ interface SessionTab {
 interface SessionData {
   root: string
   activePath: string
+  secondaryPath: string
+  splitView: boolean
   tabs: SessionTab[]
 }
 
@@ -304,6 +344,8 @@ export function schedulePersistSession(delay = 1000): void {
     const data: SessionData = {
       root: store.root,
       activePath: store.activePath,
+      secondaryPath: store.secondaryPath,
+      splitView: store.splitView,
       tabs: store.tabs.map((t) => ({
         path: t.path,
         name: t.name,
@@ -357,10 +399,51 @@ export async function restoreSession(): Promise<boolean> {
       ? data.activePath
       : store.tabs[0].path
     if (typeof data.root === 'string') store.root = data.root
+    // 分屏状态：副窗格标签必须仍存在且不同于活动标签
+    if (data.splitView && typeof data.secondaryPath === 'string') {
+      const sec = store.tabs.find((t) => t.path === data.secondaryPath)
+      if (sec && sec.path !== store.activePath) {
+        store.secondaryPath = sec.path
+        store.splitView = true
+      }
+    }
     return true
   } catch {
     return false
   }
+}
+
+// ---------- 双栏分屏 ----------
+
+/** 开启 / 关闭分屏；开启时副窗格默认放第一个非活动标签 */
+export function toggleSplitView(): void {
+  if (!store.splitView) {
+    if (store.tabs.length < 2) return
+    store.splitView = true
+    store.secondaryPath = store.tabs.find((t) => t.path !== store.activePath)?.path ?? ''
+    if (!store.secondaryPath) store.splitView = false
+    return
+  }
+  store.splitView = false
+  store.secondaryPath = ''
+  store.focusedPane = 'primary'
+}
+
+/** 把标签放进副窗格（标签页右键「在右窗格打开」），并聚焦副窗格便于直接编辑 */
+export function openInSecondaryPane(path: string): void {
+  const tab = store.tabs.find((t) => t.path === path)
+  if (!tab) return
+  store.splitView = true
+  if (path === store.activePath) return
+  store.secondaryPath = path
+  store.focusedPane = 'secondary'
+}
+
+/** 切换聚焦窗格（窗格位置固定，聚焦决定保存/查找/导出/大纲/状态栏的目标） */
+export function setFocusedPane(which: 'primary' | 'secondary'): void {
+  if (!store.splitView) return
+  if (which === 'secondary' && !store.secondaryPath) return
+  store.focusedPane = which
 }
 
 // ---------- 保存 ----------
@@ -441,7 +524,8 @@ export async function saveTab(tab: Tab): Promise<boolean> {
 }
 
 export async function saveActive(): Promise<boolean> {
-  const t = store.active
+  // 分屏下保存「聚焦窗格」的文件（Ctrl+S 保存的是正在编辑的那个）
+  const t = store.focusedTab
   if (!t) return true
   return await saveTab(t)
 }
@@ -463,7 +547,58 @@ export async function confirmOpenLarge(name: string, content: string): Promise<b
   )
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | undefined
+// ---------- 跨文件替换 ----------
+
+export interface ReplaceSummary {
+  files: number
+  count: number
+}
+
+/** 跨文件全部替换（大小写不敏感字面量，与全文搜索语义一致）：
+ *  先预览命中数量弹确认，执行时 Rust 侧逐文件自动备份本地历史快照；
+ *  已打开的干净标签重读磁盘同步，有未保存修改的标签标为「外部已修改」由用户裁决。
+ *  取消或无匹配返回 null。 */
+export async function replaceAllInWorkspace(query: string, replacement: string): Promise<ReplaceSummary | null> {
+  if (!store.root || !query.trim()) return null
+  const preview = await replaceWorkspace(store.root, query, replacement, true)
+  if (!preview.count) return null
+  const ok = await ask(
+    `将在 ${preview.files.length} 个文件中替换 ${preview.count} 处。\n\n「${query}」→「${replacement}」\n\n替换前会为每个受影响文件自动保存一份本地历史快照。`,
+    { title: '全部替换', kind: 'warning', okLabel: '全部替换', cancelLabel: '取消' },
+  )
+  if (!ok) return null
+  const out = await replaceWorkspace(store.root, query, replacement, false)
+  const touched = new Set(out.files)
+  for (const tab of store.tabs) {
+    if (isUntitled(tab.path) || !touched.has(tab.path)) continue
+    if (tab.content === tab.savedContent) {
+      // 干净标签：直接以磁盘新内容为准
+      try {
+        const fresh = await readTextFile(tab.path)
+        tab.content = fresh
+        tab.savedContent = fresh
+      } catch {
+        /* 读不到就交给外部修改检测兜底 */
+      }
+    } else {
+      // 有未保存修改：不能静默覆盖，交给「外部已修改」横幅
+      tab.externalChanged = true
+    }
+  }
+  // 回填 mtime 基线，避免 3 秒轮询把已同步的标签误报为外部修改
+  const mt = await fileMtimes([...touched]).catch(() => ({}) as Record<string, number | null>)
+  for (const tab of store.tabs) {
+    const t = mt[tab.path]
+    if (t != null) tab.mtime = t
+  }
+  // 刷新编辑器显示（md 与 text 编辑器都监听 revision）
+  store.contentRevision++
+  if (store.gitRepo) scheduleGitRefresh()
+  return { files: out.files.length, count: out.count }
+}
+
+/** 每个标签一个自动保存计时器（分屏双窗格交替输入互不打断） */
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 let gitRefreshTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -475,22 +610,28 @@ function scheduleGitRefresh(): void {
   }, 2000)
 }
 
-/** 输入防抖自动保存 */
-export function scheduleSave(delay = 1200): void {
+/** 输入防抖自动保存；可指定目标标签（分屏双窗格各自保存各自的文件），缺省为聚焦窗格 */
+export function scheduleSave(delay = 1200, target?: Tab): void {
   if (!store.autoSave) return
+  const tab = target ?? store.focusedTab
+  if (!tab) return
   // 未命名文档不自动保存：首次落盘需询问位置，自动弹对话框会打断输入
-  if (store.active && isUntitled(store.active.path)) return
-  clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    saveActive()
-      .then(() => {
-        if (store.gitRepo) scheduleGitRefresh()
-      })
-      .catch((e) => {
-        store.logs = `自动保存失败：${e}`
-        store.logVisible = true
-      })
-  }, delay)
+  if (isUntitled(tab.path)) return
+  clearTimeout(saveTimers.get(tab.path))
+  saveTimers.set(
+    tab.path,
+    setTimeout(() => {
+      saveTimers.delete(tab.path)
+      saveTab(tab)
+        .then(() => {
+          if (store.gitRepo) scheduleGitRefresh()
+        })
+        .catch((e) => {
+          store.logs = `自动保存失败：${e}`
+          store.logVisible = true
+        })
+    }, delay),
+  )
 }
 
 // ---------- Git 状态（供状态栏与 Git 面板共享） ----------
@@ -548,6 +689,22 @@ export function setMdMode(mode: MdMode) {
 export function setSidebarView(v: SidebarView) {
   store.sidebarView = v
   localStorage.setItem('mdtex.sidebarView', v)
+  // 侧栏收起时点任意图标即唤回
+  if (store.sidebarCollapsed) setSidebarCollapsed(false)
+}
+
+export function setSidebarCollapsed(on: boolean) {
+  store.sidebarCollapsed = on
+  localStorage.setItem('mdtex.sidebarCollapsed', on ? 'on' : 'off')
+}
+
+export function toggleSidebarCollapsed(): void {
+  setSidebarCollapsed(!store.sidebarCollapsed)
+}
+
+export function setVimMode(on: boolean) {
+  store.vimMode = on
+  localStorage.setItem('mdtex.vimMode', on ? 'on' : 'off')
 }
 
 export function setAutoSave(on: boolean) {

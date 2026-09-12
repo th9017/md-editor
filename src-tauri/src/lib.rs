@@ -17,6 +17,12 @@ pub struct SearchHit {
 }
 
 #[derive(Serialize)]
+pub struct ReplaceOut {
+    pub files: Vec<String>,
+    pub count: u64,
+}
+
+#[derive(Serialize)]
 pub struct GitOut {
     pub code: i32,
     pub stdout: String,
@@ -190,6 +196,104 @@ async fn search_workspace(root: String, query: String) -> Result<Vec<SearchHit>,
     Ok(hits)
 }
 
+/// 在一行内做大小写不敏感的字面量替换，返回 (新行, 命中数)。
+/// 逐字符比较小写形式（不用整串 to_lowercase：部分字符小写后会变长，会打乱位置对齐）。
+fn replace_line_ci(line: &str, needle_lc: &[char], replacement: &str) -> (String, u32) {
+    if needle_lc.is_empty() {
+        return (line.to_string(), 0);
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+    let mut hits = 0u32;
+    'outer: while i < chars.len() {
+        let end = i + needle_lc.len();
+        if end <= chars.len() {
+            for (a, b) in chars[i..end].iter().zip(needle_lc.iter()) {
+                let mut la = a.to_lowercase();
+                let mut lb = b.to_lowercase();
+                if la.next() != lb.next() || la.next().is_some() || lb.next().is_some() {
+                    out.push(chars[i]);
+                    i += 1;
+                    continue 'outer;
+                }
+            }
+            out.push_str(replacement);
+            i = end;
+            hits += 1;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    (out, hits)
+}
+
+/// 跨文件全文替换：与 search_workspace 完全相同的文件集与匹配语义（大小写不敏感字面量）。
+/// preview=true 只统计不写盘；执行时每个受影响文件先把旧内容存进本地历史快照（失败则跳过该文件）。
+#[tauri::command]
+async fn replace_workspace(
+    root: String,
+    query: String,
+    replacement: String,
+    preview: bool,
+) -> Result<ReplaceOut, String> {
+    let query_lc = query.to_lowercase();
+    if query_lc.trim().is_empty() {
+        return Ok(ReplaceOut { files: vec![], count: 0 });
+    }
+    let dir = PathBuf::from(&root);
+    if !dir.is_dir() {
+        return Err(format!("目录不存在：{root}"));
+    }
+    let needle: Vec<char> = query_lc.chars().collect();
+    let mut files: Vec<String> = Vec::new();
+    let mut total: u64 = 0;
+    walk_text_files(&dir, 4000, |p| {
+        let Ok(meta) = fs::metadata(p) else { return };
+        if meta.len() > 1024 * 1024 {
+            return;
+        }
+        let Ok(content) = fs::read_to_string(p) else { return };
+        if content[..content.len().min(1024)].contains(' ') {
+            return;
+        }
+        // split_inclusive 保留每行自己的行尾（'\r' 或 \n），替换后原样拼回，不改变换行风格
+        let mut out = String::with_capacity(content.len());
+        let mut hits_total = 0u32;
+        for seg in content.split_inclusive('\n') {
+            let (text, term) = match seg.strip_suffix('\n') {
+                Some(head) => match head.strip_suffix('\r') {
+                    Some(t) => (t, "\r\n"),
+                    None => (head, "\n"),
+                },
+                None => (seg, ""),
+            };
+            let (newline, hits) = replace_line_ci(text, &needle, &replacement);
+            hits_total += hits;
+            out.push_str(&newline);
+            out.push_str(term);
+        }
+        if hits_total == 0 {
+            return;
+        }
+        if preview {
+            files.push(p.to_string_lossy().to_string());
+            total += hits_total as u64;
+            return;
+        }
+
+        if save_snapshot_inner(p, &content).is_err() {
+            return; // 备份失败就不动这个文件
+        }
+        if fs::write(p, &out).is_ok() {
+            files.push(p.to_string_lossy().to_string());
+            total += hits_total as u64;
+        }
+    });
+    Ok(ReplaceOut { files, count: total })
+}
+
 #[tauri::command]
 async fn list_workspace_files(root: String) -> Result<Vec<String>, String> {
     let dir = PathBuf::from(&root);
@@ -345,12 +449,12 @@ fn history_root() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-#[tauri::command]
-async fn save_snapshot(path: String, content: String) -> Result<(), String> {
+/// 把内容写入该路径的本地历史快照（每路径保留最近 50 份）；空内容不存
+fn save_snapshot_inner(path: &Path, content: &str) -> Result<(), String> {
     if content.is_empty() {
         return Ok(());
     }
-    let dir = history_root()?.join(format!("{:016x}", path_hash(&path)));
+    let dir = history_root()?.join(format!("{:016x}", path_hash(&path.to_string_lossy())));
     fs::create_dir_all(&dir).map_err(|e| format!("创建快照目录失败：{e}"))?;
     let file = dir.join(format!("{}.md", now_stamp()));
     fs::write(&file, content).map_err(|e| format!("写入快照失败：{e}"))?;
@@ -366,6 +470,11 @@ async fn save_snapshot(path: String, content: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn save_snapshot(path: String, content: String) -> Result<(), String> {
+    save_snapshot_inner(Path::new(&path), &content)
 }
 
 #[tauri::command]
@@ -483,6 +592,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             search_workspace,
+            replace_workspace,
             list_workspace_files,
             git_run,
             git_status,

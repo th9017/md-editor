@@ -39,6 +39,13 @@ export interface SearchHit {
   line_text: string
 }
 
+export interface ReplaceOut {
+  /** 被替换的文件绝对路径清单 */
+  files: string[]
+  /** 替换总次数 */
+  count: number
+}
+
 export interface GitFileChange {
   path: string
   /** porcelain 状态码：M / A / D / R / ? */

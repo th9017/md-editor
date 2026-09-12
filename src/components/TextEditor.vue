@@ -9,10 +9,11 @@ import { EditorState } from '@codemirror/state'
 import { basicSetup } from 'codemirror'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { indentWithTab } from '@codemirror/commands'
+import { vim } from '@replit/codemirror-vim'
 import { cmDark } from '../theme'
-import { store, scheduleSave } from '../store'
+import { store } from '../store'
 
-const props = defineProps<{ path: string; value: string; revision?: number }>()
+const props = defineProps<{ path: string; value: string; revision?: number; vim?: boolean }>()
 const emit = defineEmits<{ (e: 'update', value: string): void }>()
 
 const host = ref<HTMLDivElement>()
@@ -25,10 +26,11 @@ function build(): void {
   const extensions = [
     basicSetup,
     keymap.of([indentWithTab]),
+    // Vim 键位（可在设置中开关；Ctrl+S/Ctrl+F 等全局键不在 vim 键位表内，不受影响）
+    ...(props.vim ? [vim()] : []),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {
         emit('update', u.state.doc.toString())
-        scheduleSave()
       }
     }),
     EditorView.theme({
@@ -45,6 +47,7 @@ function build(): void {
 
 onMounted(build)
 watch(() => store.theme, build)
+watch(() => props.vim, build)
 watch(
   () => props.revision,
   () => {
