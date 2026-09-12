@@ -6,7 +6,7 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows_10_11-0078D6?logo=windows11&logoColor=white)
-![Version](https://img.shields.io/badge/Version-0.5.0-blue)
+![Version](https://img.shields.io/badge/Version-0.6.0-blue)
 
 ## ✨ 功能特性
 
@@ -45,6 +45,7 @@
 - **侧栏收起**：Ctrl+B 或标题栏按钮收起侧栏，专注写作区；点侧栏图标自动唤回
 - **命令面板**：Ctrl+Shift+P 汇聚全部命令
 - **快捷键自定义**：设置 → 快捷键，改绑命令面板 / 保存 / 查找等应用级动作，冲突自动拦截、一键恢复默认
+- **检查更新**：设置 → 关于手动检查新版本，发现新版一键直达下载页（平时完全不联网）
 - **自动保存 + Ctrl+S**：输入防抖自动保存
 - **完全离线**：编辑器资源（Vditor、KaTeX、代码高亮）本地化部署，运行全程不需要联网
 - **轻量**：安装包不到 7 MB，界面由系统 WebView2 渲染，不打包浏览器内核

@@ -141,13 +141,30 @@
         </div>
         <p class="hint">仅可改绑应用级动作；编辑器内置快捷键不受影响。新快捷键需包含 Ctrl 或 Alt（或为 F1~F12）。</p>
       </section>
+
+      <!-- 关于 -->
+      <section class="sec">
+        <h4 class="sec-title">关于</h4>
+        <div class="row-inline">
+          <span class="row-label">当前版本</span>
+          <span class="range-value">v{{ appVersion }}</span>
+        </div>
+        <div class="row-inline">
+          <button type="button" class="outline" :disabled="updateBusy" @click="onCheckUpdate">
+            {{ updateBusy ? '检查中…' : '检查更新' }}
+          </button>
+        </div>
+        <p class="hint">检查时会访问 GitHub Releases；网络不可达或未开代理时可能失败。</p>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
-import { open } from '@tauri-apps/plugin-dialog'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { getVersion } from '@tauri-apps/api/app'
+import { ask, open } from '@tauri-apps/plugin-dialog'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   ACTIONS,
   comboFromEvent,
@@ -158,8 +175,8 @@ import {
   setFocusMode,
   setFontSize,
   setImageFolder,
-  setLineHeight,
   setKeybinding,
+  setLineHeight,
   setTheme,
   setTypewriter,
   setVimMode,
@@ -167,6 +184,7 @@ import {
   type ActionId,
 } from '../store'
 import { baseName, readImageBytes, saveBgImage } from '../tauri'
+import { fetchLatestRelease, isNewerVersion, RELEASES_PAGE, truncateNotes } from '../updater'
 import type { ThemeId } from '../types'
 
 const DEFAULT_ACCENT = '#0969da'
@@ -226,6 +244,49 @@ function onAutoSave(e: Event): void {
 
 function onVim(e: Event): void {
   setVimMode(checkedOf(e))
+}
+
+// ---------- 检查更新（仅手动触发） ----------
+
+const appVersion = ref('')
+const updateBusy = ref(false)
+
+onMounted(async () => {
+  try {
+    appVersion.value = (await getVersion()) ?? ''
+  } catch {
+    appVersion.value = ''
+  }
+})
+
+async function onCheckUpdate(): Promise<void> {
+  if (updateBusy.value) return
+  updateBusy.value = true
+  try {
+    const info = await fetchLatestRelease()
+    if (!isNewerVersion(info.version, appVersion.value)) {
+      await ask(`当前已是最新版本 v${appVersion.value || '?'}。`, {
+        title: '检查更新',
+        okLabel: '好的',
+      })
+      return
+    }
+    const go = await ask(
+      `发现新版本 v${info.version}（当前 v${appVersion.value || '?'}）\n\n${truncateNotes(info.notes)}\n\n前往下载页面手动安装？`,
+      { title: '发现新版本', okLabel: '前往下载', cancelLabel: '以后再说' },
+    )
+    if (go) await openUrl(RELEASES_PAGE)
+  } catch (e) {
+    store.logs = `检查更新失败：${e}`
+    store.logVisible = true
+    const open = await ask(
+      `检查更新失败：${e}。\n\n常见原因：GitHub 接口限流（HTTP 403，多账号共享出口 IP 时常见）或网络不可达；如使用代理，请在系统代理开启后重试。\n\n可直接前往发布页查看最新版本。`,
+      { title: '检查更新', okLabel: '打开发布页', cancelLabel: '关闭' },
+    )
+    if (open) await openUrl(RELEASES_PAGE)
+  } finally {
+    updateBusy.value = false
+  }
 }
 
 function onTypewriter(e: Event): void {
