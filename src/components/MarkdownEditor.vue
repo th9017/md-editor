@@ -553,36 +553,23 @@ function focusBlockEl(): HTMLElement | null {
 /** 打字机模式：给内容区加上下半屏内边距，首行 / 末行也能滚到视口中央。
  *  参考 Typedown（Muya 封装层）的 padding 方案：没有这段余量时，
  *  文档首尾的 scrollTop 被钳住，光标行永远到不了中央——表现为中部正常、首尾失效。
- *  这里按实际编辑区高度计算，不用其 50vh 硬编码（适配 Vditor 的内滚动结构）。 */
+ *  不走内联 padding：Vditor 的 setPadding 会在初始化 / 切模式 / setValue / 缩放时
+ *  用内联 shorthand（"10px 35px"）反复覆写 .vditor-reset 的 padding；改为在根节点挂
+ *  vd-typewriter 类 + --mdtw-pad 变量，由带 !important 的样式规则压过它（见 <style>）。
+ *  滚动容器就是 .vditor-reset 自身（wysiwyg/ir 为 overflow:auto + height:100% 的 pre，
+ *  sv 为 textarea），无需向上探测祖先。 */
 function applyTypewriterPadding(): void {
+  const root = el.value
+  if (!root) return
   const content = editingEl ?? locateEditingEl(store.mdMode)
-  if (!content) return
-  if (!store.typewriter) {
-    content.style.paddingTop = ''
-    content.style.paddingBottom = ''
+  if (!content || !store.typewriter) {
+    root.classList.remove('vd-typewriter')
     return
   }
-  // sv 的 textarea 既是内容也是滚动容器；ir/wysiwyg 的内容是 .vditor-reset，
-  // 滚动发生在其 overflow:auto/scroll 的祖先块上
-  let scroller: HTMLElement | null = null
-  if (content instanceof HTMLTextAreaElement) {
-    scroller = content
-  } else {
-    let node: HTMLElement | null = content.parentElement
-    while (node && node !== document.body) {
-      const oy = getComputedStyle(node).overflowY
-      if (oy === 'auto' || oy === 'scroll') {
-        scroller = node
-        break
-      }
-      node = node.parentElement
-    }
-  }
-  if (!scroller) return
   const lineHeight = Number.parseFloat(getComputedStyle(content).lineHeight) || 26
-  const pad = Math.max(0, scroller.clientHeight / 2 - lineHeight / 2)
-  content.style.paddingTop = `${pad}px`
-  content.style.paddingBottom = `${pad}px`
+  const pad = Math.max(0, content.clientHeight / 2 - lineHeight / 2)
+  root.classList.add('vd-typewriter')
+  root.style.setProperty('--mdtw-pad', `${pad}px`)
 }
 
 function onWindowResize(): void {
@@ -676,5 +663,12 @@ onBeforeUnmount(() => {
 .md-editor :deep(.vditor) {
   border: none;
   border-radius: 0;
+}
+
+/* 打字机模式的内容留白：!important 压过 Vditor setPadding 写的内联 shorthand
+   （"10px 35px" 会重置 top/bottom），变量值由 JS 按编辑区高度计算 */
+.md-editor.vd-typewriter :deep(.vditor-reset) {
+  padding-top: var(--mdtw-pad) !important;
+  padding-bottom: var(--mdtw-pad) !important;
 }
 </style>
