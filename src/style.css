@@ -6,9 +6,36 @@
   --bg-image: none;
   --bg-dim: 0.35;
   --bg-blur: 0px;
+  --handwriting-font: cursive;
   --radius: 6px;
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.06);
   --shadow-2: 0 4px 16px rgb(0 0 0 / 0.12);
+}
+
+/* 内置离线字体，随应用静态资源发布 */
+@font-face {
+  font-family: HandwritingHaJifeng;
+  src: url('/handwriting-fonts/ha-jifeng-regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: HandwritingHaJifengBold;
+  src: url('/handwriting-fonts/ha-jifeng-bold.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: HandwritingHaJifengLight;
+  src: url('/handwriting-fonts/ha-jifeng-light.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: HandwritingJinghuaLaosong;
+  src: url('/handwriting-fonts/jinghua-laosong.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
 }
 
 /* 亮色（默认） */
@@ -109,6 +136,40 @@ body {
   background: var(--bg);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+}
+
+[data-handwriting='on'] .editor-stage.handwriting-stage .vditor-reset {
+  font-family: var(--handwriting-font), 'KaiTi', 'STKaiti', 'Microsoft YaHei', sans-serif !important;
+  font-size: calc(var(--editor-font-size) + 1px);
+  letter-spacing: 0.02em;
+}
+
+[data-handwriting='on'] .editor-stage.handwriting-stage .vditor-reset .katex,
+[data-handwriting='on'] .editor-stage.handwriting-stage .vditor-reset .katex-display {
+  font-size: 1em !important;
+}
+
+.editor-stage.handwriting-stage .editor-area {
+  background-color: #fffdf5;
+}
+
+.editor-stage.handwriting-stage.paper-lined .editor-area,
+.editor-stage.handwriting-stage.paper-letter .editor-area {
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(81, 126, 168, 0.22) 32px, transparent 33px);
+}
+
+.editor-stage.handwriting-stage.paper-grid .editor-area {
+  background-image: linear-gradient(rgba(81, 126, 168, 0.16) 1px, transparent 1px), linear-gradient(90deg, rgba(81, 126, 168, 0.16) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.editor-stage.handwriting-stage.paper-letter .editor-area {
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(81, 126, 168, 0.24) 32px, transparent 33px), linear-gradient(90deg, transparent 0, transparent 54px, rgba(205, 80, 80, 0.28) 55px, transparent 56px);
+}
+
+.editor-stage.handwriting-stage .vditor,
+.editor-stage.handwriting-stage .vditor-reset {
+  background: transparent !important;
 }
 
 ::selection {

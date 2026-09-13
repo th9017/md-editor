@@ -1,6 +1,6 @@
 # MD 编辑器
 
-本地轻量、离线优先的 Markdown 桌面编辑器。基于 Tauri 2 构建，安装包不到 7 MB，不联网也能完整使用。
+本地轻量、离线优先的 Markdown 桌面编辑器。基于 Tauri 2 构建，不联网也能完整使用。内置字体资源约 88 MB，启用字体功能后安装包会相应增大。
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org)
@@ -20,6 +20,7 @@
 - **查找替换**：Ctrl+F 匹配计数、上下导航、大小写 / 正则 / 全词匹配、单个 / 全部替换
 - **实时统计**：状态栏显示去空白字数、中英混合词数与预计阅读时长
 - **打字机 / 专注模式**：光标所在块居中、非当前块淡化
+- **手写信纸模式**：可切换信纸横线、横线纸、方格纸与空白纸模板，内置 HA 季风体（常规 / 粗体 / 细体）与京華老宋体，也支持导入中英文字体文件离线使用
 - **导出**：单文件 HTML（样式与公式内联，离线可看）、PDF（系统打印）、复制为 HTML
 
 **文件**

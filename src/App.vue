@@ -38,7 +38,7 @@
 
         <TabsBar @ctx="onTabCtx" />
 
-        <div class="editor-stage" :class="{ 'has-editor-bg': !!store.bgImage && !!store.bgUrl }">
+        <div class="editor-stage" :class="{ 'has-editor-bg': !!store.bgImage && !!store.bgUrl, 'handwriting-stage': store.handwriting, ['paper-' + store.paperTemplate]: store.handwriting }">
           <div v-if="store.bgImage && store.bgUrl" class="editor-bg" />
           <div v-if="store.bgImage && store.bgUrl" class="editor-dim" />
 
@@ -540,7 +540,13 @@ async function currentHtml(): Promise<string | null> {
   }
   try {
     const inlined = await inlineWorkspaceImages(body, store.root)
-    return await buildStandaloneHtml(tab.name.replace(/\.(md|markdown)$/i, ''), inlined)
+    return await buildStandaloneHtml(tab.name.replace(/\.(md|markdown)$/i, ''), inlined, {
+      handwriting: store.handwriting,
+      paperTemplate: store.paperTemplate,
+      handwritingFont: store.handwritingFont,
+      handwritingFontName: store.handwritingFontName,
+      fontSize: store.fontSize,
+    })
   } catch (e) {
     logError(`导出失败：${e}`)
     return null

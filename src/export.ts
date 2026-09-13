@@ -77,8 +77,16 @@ async function inlineCss(url: string): Promise<string> {
   return css.replace(/url\((['"]?)([^'")]+)\1\)/g, (m, _q: string, ref: string) => map.get(ref) ?? m)
 }
 
+export interface ExportStyleOptions {
+  handwriting?: boolean
+  paperTemplate?: string
+  handwritingFont?: string
+  handwritingFontName?: string
+  fontSize?: number
+}
+
 /** 组装可离线打开的单文件 HTML */
-export async function buildStandaloneHtml(title: string, bodyHtml: string): Promise<string> {
+export async function buildStandaloneHtml(title: string, bodyHtml: string, options: ExportStyleOptions = {}): Promise<string> {
   let katexCss = ''
   let katexJs = ''
   try {
@@ -92,6 +100,31 @@ export async function buildStandaloneHtml(title: string, bodyHtml: string): Prom
   const mathRender = katexJs
     ? `<script>document.querySelectorAll(".language-math").forEach(function(el){try{katex.render(el.textContent,el,{displayMode:el.tagName==="DIV"})}catch(e){}})</` + `script>`
     : ''
+  const fontFace = options.handwritingFont && !options.handwritingFont.startsWith('builtin:')
+    ? `@font-face{font-family:ExportHandwriting;src:url(${options.handwritingFont});font-display:swap;}`
+    : ''
+  const builtinFonts: Record<string, string> = {
+    'builtin:ha-jifeng-regular': '/handwriting-fonts/ha-jifeng-regular.ttf',
+    'builtin:ha-jifeng-bold': '/handwriting-fonts/ha-jifeng-bold.ttf',
+    'builtin:ha-jifeng-light': '/handwriting-fonts/ha-jifeng-light.ttf',
+    'builtin:jinghua-laosong': '/handwriting-fonts/jinghua-laosong.ttf',
+  }
+  let builtinFace = ''
+  const builtinUrl = builtinFonts[options.handwritingFont ?? '']
+  if (builtinUrl) {
+    try { builtinFace = `@font-face{font-family:ExportHandwriting;src:${await toDataUrl(builtinUrl)};font-display:swap;}` } catch { /* 字体加载失败时使用系统字体 */ }
+  }
+  const paper = options.paperTemplate ?? 'letter'
+  const handwritingCss = options.handwriting
+    ? `${fontFace}${builtinFace}
+  body{background:#fffdf5;background-image:${paper === 'grid'
+    ? 'linear-gradient(rgba(81,126,168,.16) 1px,transparent 1px),linear-gradient(90deg,rgba(81,126,168,.16) 1px,transparent 1px);background-size:32px 32px'
+    : paper === 'letter'
+      ? 'repeating-linear-gradient(to bottom,transparent 0,transparent 31px,rgba(81,126,168,.24) 32px,transparent 33px),linear-gradient(90deg,transparent 0,transparent 54px,rgba(205,80,80,.28) 55px,transparent 56px)'
+      : paper === 'lined' ? 'repeating-linear-gradient(to bottom,transparent 0,transparent 31px,rgba(81,126,168,.22) 32px,transparent 33px)' : 'none'};
+  .md-doc{font-family:${options.handwritingFont ? 'ExportHandwriting' : "'KaiTi','STKaiti','Microsoft YaHei',sans-serif"};font-size:${options.fontSize ?? 15}px;line-height:2;}
+  .katex,.katex-display{font-size:1em !important;}`
+    : ''
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -100,6 +133,7 @@ export async function buildStandaloneHtml(title: string, bodyHtml: string): Prom
 <title>${safeTitle}</title>
 <style>${katexCss}</style>
 <style>${DOC_CSS}</style>
+<style>${handwritingCss}</style>
 <script>${katexJs}</` + `script>
 </head>
 <body>

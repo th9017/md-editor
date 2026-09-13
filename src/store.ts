@@ -12,6 +12,7 @@ import type {
   SidebarView,
   Tab,
   ThemeId,
+  PaperTemplate,
 } from './types'
 import {
   baseName,
@@ -158,6 +159,10 @@ export const store = reactive({
   bgImage: localStorage.getItem('mdtex.bgImage') || '',
   bgDim: loadNum('mdtex.bgDim', 35),
   bgBlur: loadNum('mdtex.bgBlur', 0),
+  handwriting: loadFlag<'on' | 'off'>('mdtex.handwriting', 'off') === 'on',
+  paperTemplate: loadFlag<PaperTemplate>('mdtex.paperTemplate', 'letter'),
+  handwritingFont: localStorage.getItem('mdtex.handwritingFont') || '',
+  handwritingFontName: localStorage.getItem('mdtex.handwritingFontName') || '',
   /** 背景图的对象 URL（由存储的图片文件生成，运行时有效） */
   bgUrl: '',
   // 行为设置
@@ -782,6 +787,36 @@ export function setBg(bgImage: string, bgDim: number, bgBlur: number) {
   localStorage.setItem('mdtex.bgImage', bgImage)
   localStorage.setItem('mdtex.bgDim', String(bgDim))
   localStorage.setItem('mdtex.bgBlur', String(bgBlur))
+}
+
+export function setHandwriting(on: boolean) {
+  store.handwriting = on
+  document.documentElement.dataset.handwriting = on ? 'on' : 'off'
+  localStorage.setItem('mdtex.handwriting', on ? 'on' : 'off')
+}
+
+export function setPaperTemplate(template: PaperTemplate) {
+  store.paperTemplate = template
+  document.documentElement.dataset.paper = template
+  localStorage.setItem('mdtex.paperTemplate', template)
+}
+
+export function setHandwritingFont(dataUrl: string, name: string) {
+  store.handwritingFont = dataUrl
+  store.handwritingFontName = name
+  localStorage.setItem('mdtex.handwritingFont', dataUrl)
+  localStorage.setItem('mdtex.handwritingFontName', name)
+  const builtinFamilies: Record<string, string> = {
+    'builtin:ha-jifeng-regular': 'HandwritingHaJifeng',
+    'builtin:ha-jifeng-bold': 'HandwritingHaJifengBold',
+    'builtin:ha-jifeng-light': 'HandwritingHaJifengLight',
+    'builtin:jinghua-laosong': 'HandwritingJinghuaLaosong',
+  }
+  const family = builtinFamilies[dataUrl] ?? (dataUrl ? 'HandwritingImported' : 'cursive')
+  document.documentElement.style.setProperty('--handwriting-font', family)
+  let style = document.getElementById('mdtex-handwriting-font')
+  if (!style) { style = document.createElement('style'); style.id = 'mdtex-handwriting-font'; document.head.appendChild(style) }
+  style.textContent = dataUrl && !builtinFamilies[dataUrl] ? `@font-face{font-family:HandwritingImported;src:url(${dataUrl});font-display:swap;}` : ''
 }
 
 // ---------- 最近打开 ----------

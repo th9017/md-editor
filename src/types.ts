@@ -15,6 +15,8 @@ export type SidebarView = 'files' | 'search' | 'git' | 'outline' | 'recent' | 's
 
 export type ThemeId = 'light' | 'dark' | 'green' | 'paper' | 'ink'
 
+export type PaperTemplate = 'plain' | 'lined' | 'grid' | 'letter'
+
 export interface Tab {
   path: string
   name: string

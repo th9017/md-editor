@@ -111,6 +111,30 @@
           <span>打字机模式</span>
         </label>
         <label class="check-row">
+          <input type="checkbox" :checked="store.handwriting" @change="onHandwriting" />
+          <span>手写信纸模式</span>
+        </label>
+        <div v-if="store.handwriting" class="row-inline field-row">
+          <span class="row-label">纸张模板</span>
+          <select class="grow select" :value="store.paperTemplate" @change="onPaperTemplate">
+            <option value="letter">信纸横线</option>
+            <option value="lined">横线纸</option>
+            <option value="grid">方格纸</option>
+            <option value="plain">空白纸</option>
+          </select>
+        </div>
+        <div v-if="store.handwriting" class="row-inline field-row">
+          <span class="row-label">字体库</span>
+          <select class="font-select" :value="store.handwritingFont" @change="onBuiltinFont">
+            <option value="">系统手写体</option>
+            <option v-for="font in BUILTIN_FONTS" :key="font.id" :value="font.id">{{ font.name }}</option>
+          </select>
+          <button type="button" class="outline" :disabled="fontBusy" @click="pickFont">导入字体</button>
+          <span class="font-name" :title="store.handwritingFontName">{{ store.handwritingFontName || '系统手写体' }}</span>
+          <button v-if="store.handwritingFont" type="button" @click="clearFont">清除</button>
+        </div>
+        <p v-if="store.handwriting" class="hint">支持 .ttf、.otf、.woff、.woff2；字体仅保存在本机。</p>
+        <label class="check-row">
           <input type="checkbox" :checked="store.focusMode" @change="onFocusMode" />
           <span>专注模式</span>
         </label>
@@ -175,16 +199,19 @@ import {
   setBg,
   setFocusMode,
   setFontSize,
+  setHandwriting,
+  setHandwritingFont,
   setImageFolder,
   setKeybinding,
   setLineHeight,
+  setPaperTemplate,
   setTheme,
   setTypewriter,
   setVimMode,
   store,
   type ActionId,
 } from '../store'
-import { baseName, readImageBytes, saveBgImage } from '../tauri'
+import { baseName, readImageBytes, saveBgImage, readFileBytes } from '../tauri'
 import { fetchLatestRelease, isNewerVersion, RELEASES_PAGE, truncateNotes } from '../updater'
 import type { ThemeId } from '../types'
 
@@ -200,6 +227,13 @@ const THEMES: { id: ThemeId; label: string; color: string }[] = [
 
 const ACCENTS = ['#0969da', '#2da44e', '#bf3989', '#d4740c', '#d1242f', '#7d56c9']
 
+const BUILTIN_FONTS = [
+  { id: 'builtin:ha-jifeng-regular', name: 'HA 季风体 常规' },
+  { id: 'builtin:ha-jifeng-bold', name: 'HA 季风体 粗体' },
+  { id: 'builtin:ha-jifeng-light', name: 'HA 季风体 细体' },
+  { id: 'builtin:jinghua-laosong', name: '京華老宋体' },
+]
+
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -209,6 +243,7 @@ const IMAGE_MIME: Record<string, string> = {
 }
 
 const bgBusy = ref(false)
+const fontBusy = ref(false)
 
 function valueOf(e: Event): string {
   return (e.target as HTMLInputElement).value
@@ -293,6 +328,14 @@ function onTypewriter(e: Event): void {
   setTypewriter(checkedOf(e))
 }
 
+function onHandwriting(e: Event): void { setHandwriting(checkedOf(e)) }
+function onPaperTemplate(e: Event): void { setPaperTemplate(valueOf(e) as import('../types').PaperTemplate) }
+function onBuiltinFont(e: Event): void {
+  const id = valueOf(e)
+  const font = BUILTIN_FONTS.find((item) => item.id === id)
+  setHandwritingFont(id, font?.name ?? '')
+}
+
 function onFocusMode(e: Event): void {
   setFocusMode(checkedOf(e))
 }
@@ -329,6 +372,23 @@ function removeBackground(): void {
   store.bgUrl = ''
   setBg('', 0, 0)
 }
+
+async function pickFont(): Promise<void> {
+  const picked = await open({ multiple: false, filters: [{ name: '字体文件', extensions: ['ttf', 'otf', 'woff', 'woff2'] }] })
+  if (typeof picked !== 'string') return
+  fontBusy.value = true
+  try {
+    const bytes = await readFileBytes(picked)
+    let binary = ''
+    for (const b of bytes) binary += String.fromCharCode(b)
+    const ext = picked.split('.').pop()?.toLowerCase() ?? 'ttf'
+    const mime = ext === 'woff2' ? 'font/woff2' : ext === 'woff' ? 'font/woff' : ext === 'otf' ? 'font/otf' : 'font/ttf'
+    setHandwritingFont(`data:${mime};base64,${btoa(binary)}`, baseName(picked))
+  } catch (e) { logError(`导入字体失败：${e}`) }
+  finally { fontBusy.value = false }
+}
+
+function clearFont(): void { setHandwritingFont('', '') }
 
 // ---------- 快捷键改绑 ----------
 
@@ -577,4 +637,7 @@ onBeforeUnmount(stopCapture)
   font-size: 12px;
   color: var(--err);
 }
+
+.select { min-width: 120px; }
+.font-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 </style>
