@@ -180,6 +180,10 @@ export async function readImageBytes(path: string): Promise<Uint8Array> {
   return await readFile(path)
 }
 
+export async function readFileBytes(path: string): Promise<Uint8Array> {
+  return await readFile(path)
+}
+
 export async function saveSnapshot(path: string, content: string): Promise<void> {
   await invoke('save_snapshot', { path, content })
 }
