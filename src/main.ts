@@ -1,9 +1,9 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import "./style.css";
-import { setAccent, setBg, setFontSize, setLineHeight, setTheme, store } from "./store";
+import { setAccent, setBg, setFontSize, setHandwriting, setHandwritingFont, setLineHeight, setPaperTemplate, setTheme, store } from "./store";
 import { appDataDir, joinPath, readImageBytes } from "./tauri";
-import type { ThemeId } from "./types";
+import type { PaperTemplate, ThemeId } from "./types";
 
 // 启动时恢复持久化的外观设置（主题/强调色/字号/行距）
 document.documentElement.dataset.theme = store.theme;
@@ -12,6 +12,9 @@ if (store.accent) setAccent(store.accent);
 setFontSize(store.fontSize);
 setLineHeight(store.lineHeight);
 document.documentElement.dataset.lineHeight = store.lineHeight;
+setHandwriting(store.handwriting);
+setPaperTemplate(store.paperTemplate);
+if (store.handwritingFont) setHandwritingFont(store.handwritingFont, store.handwritingFontName);
 
 // 恢复写作区背景图（从应用数据目录读取持久化的图片文件）
 if (store.bgImage) {
@@ -73,6 +76,13 @@ window.addEventListener('storage', (e) => {
     if (bgImage) applyBackgroundFromDisk().catch(() => {})
     else store.bgUrl = ''
   }
+  const handwriting = localStorage.getItem('mdtex.handwriting') === 'on'
+  if (handwriting !== store.handwriting) setHandwriting(handwriting)
+  const paper = localStorage.getItem('mdtex.paperTemplate') as PaperTemplate | null
+  if (paper && ['plain', 'lined', 'grid', 'letter'].includes(paper) && paper !== store.paperTemplate) setPaperTemplate(paper)
+  const font = localStorage.getItem('mdtex.handwritingFont') || ''
+  const fontName = localStorage.getItem('mdtex.handwritingFontName') || ''
+  if (font !== store.handwritingFont || fontName !== store.handwritingFontName) setHandwritingFont(font, fontName)
 })
 
 createApp(App).mount("#app");
