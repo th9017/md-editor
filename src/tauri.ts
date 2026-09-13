@@ -180,8 +180,9 @@ export async function readImageBytes(path: string): Promise<Uint8Array> {
   return await readFile(path)
 }
 
-export async function readFileBytes(path: string): Promise<Uint8Array> {
-  return await readFile(path)
+/** 把用户导入的字体文件拷进应用数据目录，返回存储路径（字体不入 localStorage，见 store.setHandwritingFont） */
+export async function saveFontFile(src: string): Promise<string> {
+  return await invoke<string>('save_font_file', { src })
 }
 
 export async function saveSnapshot(path: string, content: string): Promise<void> {

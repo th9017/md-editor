@@ -85,6 +85,19 @@ export interface ExportStyleOptions {
   fontSize?: number
 }
 
+/** 把磁盘字体文件读成 data URL（导出 HTML 内联用；分块拼接避免大文件卡死） */
+async function fileToDataUrl(path: string): Promise<string> {
+  const bytes = new Uint8Array(await readFile(path))
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  const ext = path.split('.').pop()?.toLowerCase() ?? 'ttf'
+  const mime = ext === 'woff2' ? 'font/woff2' : ext === 'woff' ? 'font/woff' : ext === 'otf' ? 'font/otf' : 'font/ttf'
+  return `data:${mime};base64,${btoa(bin)}`
+}
+
 /** 组装可离线打开的单文件 HTML */
 export async function buildStandaloneHtml(title: string, bodyHtml: string, options: ExportStyleOptions = {}): Promise<string> {
   let katexCss = ''
@@ -100,21 +113,22 @@ export async function buildStandaloneHtml(title: string, bodyHtml: string, optio
   const mathRender = katexJs
     ? `<script>document.querySelectorAll(".language-math").forEach(function(el){try{katex.render(el.textContent,el,{displayMode:el.tagName==="DIV"})}catch(e){}})</` + `script>`
     : ''
-  const fontFace = options.handwritingFont && !options.handwritingFont.startsWith('builtin:')
-    ? `@font-face{font-family:ExportHandwriting;src:url(${options.handwritingFont});font-display:swap;}`
-    : ''
   const builtinFonts: Record<string, string> = {
     'builtin:handwriting': '/handwriting-fonts/handwriting.ttf',
     'builtin:jinghua-laosong': '/handwriting-fonts/jinghua-laosong.ttf',
   }
-  let builtinFace = ''
-  const builtinUrl = builtinFonts[options.handwritingFont ?? '']
+  const fontRef = options.handwritingFont ?? ''
+  const builtinUrl = builtinFonts[fontRef]
+  let face = ''
   if (builtinUrl) {
-    try { builtinFace = `@font-face{font-family:ExportHandwriting;src:${await toDataUrl(builtinUrl)};font-display:swap;}` } catch { /* 字体加载失败时使用系统字体 */ }
+    try { face = `@font-face{font-family:ExportHandwriting;src:${await toDataUrl(builtinUrl)};font-display:swap;}` } catch { /* 字体加载失败时使用系统字体 */ }
+  } else if (fontRef) {
+    // 导入字体存的是磁盘路径：读文件内联为 data URL，保证导出的 HTML 离线可用
+    try { face = `@font-face{font-family:ExportHandwriting;src:${await fileToDataUrl(fontRef)};font-display:swap;}` } catch { /* 字体读取失败时使用系统字体 */ }
   }
   const paper = options.paperTemplate ?? 'letter'
   const handwritingCss = options.handwriting
-    ? `${fontFace}${builtinFace}
+    ? `${face}
   body{background:#fffdf5;background-image:${paper === 'grid'
     ? 'linear-gradient(rgba(81,126,168,.16) 1px,transparent 1px),linear-gradient(90deg,rgba(81,126,168,.16) 1px,transparent 1px);background-size:32px 32px'
     : paper === 'letter'

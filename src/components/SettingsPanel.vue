@@ -211,7 +211,7 @@ import {
   store,
   type ActionId,
 } from '../store'
-import { baseName, readImageBytes, saveBgImage, readFileBytes } from '../tauri'
+import { baseName, readImageBytes, saveBgImage, saveFontFile } from '../tauri'
 import { fetchLatestRelease, isNewerVersion, RELEASES_PAGE, truncateNotes } from '../updater'
 import type { ThemeId } from '../types'
 
@@ -376,12 +376,10 @@ async function pickFont(): Promise<void> {
   if (typeof picked !== 'string') return
   fontBusy.value = true
   try {
-    const bytes = await readFileBytes(picked)
-    let binary = ''
-    for (const b of bytes) binary += String.fromCharCode(b)
-    const ext = picked.split('.').pop()?.toLowerCase() ?? 'ttf'
-    const mime = ext === 'woff2' ? 'font/woff2' : ext === 'woff' ? 'font/woff' : ext === 'otf' ? 'font/otf' : 'font/ttf'
-    setHandwritingFont(`data:${mime};base64,${btoa(binary)}`, baseName(picked))
+    // 字体文件拷进应用数据目录，localStorage 只存路径：
+    // 字体动辄十几 MB，转 base64 存 localStorage 必超约 5MB 配额且逐字节拼接极慢
+    const saved = await saveFontFile(picked)
+    setHandwritingFont(saved, baseName(picked))
   } catch (e) { logError(`导入字体失败：${e}`) }
   finally { fontBusy.value = false }
 }

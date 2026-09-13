@@ -466,6 +466,30 @@ async fn save_bg_image(src: String) -> Result<String, String> {
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// 把用户导入的字体文件拷进「数据目录/fonts/custom.{ext}」，返回存储路径。
+/// 字体动辄十几 MB，不能像旧实现那样转 base64 塞进 localStorage（约 5MB 配额必超限）；
+/// 路径存 localStorage，渲染层经 asset 协议加载，导出时再读文件内联。
+#[tauri::command]
+async fn save_font_file(src: String) -> Result<String, String> {
+    let src_path = PathBuf::from(&src);
+    if !src_path.is_file() {
+        return Err(format!("字体文件不存在：{src}"));
+    }
+    let ext = src_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| "ttf".into());
+    let ext = match ext.as_str() {
+        "ttf" | "otf" | "woff" | "woff2" => ext,
+        _ => "ttf".to_string(),
+    };
+    let dir = app_data_dir().ok_or("无法定位应用数据目录")?.join("fonts");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
+    let dest = dir.join(format!("custom.{ext}"));
+    fs::copy(&src_path, &dest).map_err(|e| format!("复制字体失败：{e}"))?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 // ---------- 本地历史快照 ----------
 
 /// 快照根目录：只定位不创建。读取类命令不应有写副作用（读快照不应顺手建目录）
@@ -668,6 +692,7 @@ pub fn run() {
             git_status,
             read_file_meta,
             save_bg_image,
+            save_font_file,
             save_snapshot,
             list_snapshots,
             read_snapshot_file,

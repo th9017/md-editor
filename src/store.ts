@@ -1,6 +1,7 @@
 import { computed, reactive } from 'vue'
 import { ask } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
   FileNode,
@@ -801,20 +802,32 @@ export function setPaperTemplate(template: PaperTemplate) {
   localStorage.setItem('mdtex.paperTemplate', template)
 }
 
-export function setHandwritingFont(dataUrl: string, name: string) {
-  store.handwritingFont = dataUrl
+/** 设置手写字体：fontRef 为内置选择器（builtin:*）或导入字体的磁盘路径。
+ *  导入字体只存路径——字体动辄十几 MB，localStorage 约 5MB 配额装不下 base64；
+ *  渲染层经 asset 协议加载磁盘文件，导出 HTML 时再读文件内联（见 export.ts）。 */
+export function setHandwritingFont(fontRef: string, name: string) {
+  store.handwritingFont = fontRef
   store.handwritingFontName = name
-  localStorage.setItem('mdtex.handwritingFont', dataUrl)
+  localStorage.setItem('mdtex.handwritingFont', fontRef)
   localStorage.setItem('mdtex.handwritingFontName', name)
   const builtinFamilies: Record<string, string> = {
     'builtin:handwriting': 'HandwritingFont',
     'builtin:jinghua-laosong': 'HandwritingJinghuaLaosong',
   }
-  const family = builtinFamilies[dataUrl] ?? (dataUrl ? 'HandwritingImported' : 'cursive')
+  let family = 'cursive'
+  let faceCss = ''
+  if (fontRef) {
+    if (builtinFamilies[fontRef]) {
+      family = builtinFamilies[fontRef]
+    } else {
+      family = 'HandwritingImported'
+      faceCss = `@font-face{font-family:HandwritingImported;src:url(${convertFileSrc(fontRef)});font-display:swap;}`
+    }
+  }
   document.documentElement.style.setProperty('--handwriting-font', family)
   let style = document.getElementById('mdtex-handwriting-font')
   if (!style) { style = document.createElement('style'); style.id = 'mdtex-handwriting-font'; document.head.appendChild(style) }
-  style.textContent = dataUrl && !builtinFamilies[dataUrl] ? `@font-face{font-family:HandwritingImported;src:url(${dataUrl});font-display:swap;}` : ''
+  style.textContent = faceCss
 }
 
 // ---------- 最近打开 ----------
