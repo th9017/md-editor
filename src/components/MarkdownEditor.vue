@@ -20,9 +20,22 @@ const emit = defineEmits<{ (e: 'update', value: string): void }>()
 /** 双栏分屏下，非聚焦窗格不写共享的大纲状态（store.outline/activeHeading 只属于聚焦窗格） */
 const focused = (): boolean => props.focused !== false
 
+type ToolbarItem = NonNullable<NonNullable<VditorOptions>['toolbar']>[number]
+
 /** 精简工具栏：去掉录音 / 重复导出入口 / 帮助等噪音项 */
-const TOOLBAR = [
-  'headings', 'bold', 'italic', 'strike', 'link',
+const TOOLBAR: ToolbarItem[] = [
+  'headings', 'bold', 'italic', 'strike',
+  {
+    name: 'mark',
+    tip: '高亮',
+    tipPosition: 'ne',
+    // ⇧⌘M（Windows 上即 Ctrl+Shift+M）；Ctrl+Shift+H 被 Vditor 内置的「分隔线」占用
+    hotkey: '⇧⌘M',
+    // Vditor 的图标精灵图里没有高亮图标，自带 path；样式由 .vditor-toolbar__item svg 接管（fill: currentColor）
+    icon: '<svg viewBox="0 0 32 32"><path d="M14.8 18.6 25.9 7.5a1.7 1.7 0 0 1 2.4 0l2.2 2.2a1.7 1.7 0 0 1 0 2.4L19.4 23.2z"/><path d="M13 20.4 18.6 26l-7.7 2.3a1 1 0 0 1-1.3-.7L7.6 21z"/><path d="M4 29.2h24a1.4 1.4 0 0 1 0 2.8H4a1.4 1.4 0 0 1 0-2.8z"/></svg>',
+    click: () => applyHighlight(),
+  },
+  'link',
   '|',
   'list', 'ordered-list', 'check', 'outdent', 'indent',
   '|',
@@ -70,6 +83,8 @@ function build(mode: MdMode): void {
     preview: {
       math: { engine: 'KaTeX', inlineDigit: true },
       hljs: { style: hljsStyle(store.theme), lineNumber: false },
+      // 开启 ==高亮== 解析（Lute 默认关闭），编辑器与预览共用这一个开关
+      markdown: { mark: true },
     },
     upload: {
       accept: 'image/*',
@@ -92,6 +107,7 @@ function build(mode: MdMode): void {
       setupScrollSpy()
       setupCaretListeners(mode)
       setupImgFixup()
+      bindMarkButton()
       fixupImgs()
       // 打字机开关已开时（新建 / 切文件 / 切模式重建）：先补上下半屏 padding（首尾行才能居中），
       // 再把光标行立即居中；稍后重试一次防渲染未稳
@@ -335,6 +351,89 @@ function locateEditingEl(mode: MdMode): HTMLElement | null {
   return el.value.querySelector<HTMLElement>(
     mode === 'ir' ? '.vditor-ir .vditor-reset' : '.vditor-wysiwyg .vditor-reset',
   )
+}
+
+// ---------- 高亮格式（==文字==） ----------
+
+/** 块级开头的行（标题 / 引用 / 列表 / 代码围栏）：SV 下多行包裹时跳过，否则会把块结构包进 == 里 */
+const BLOCK_LINE = /^\s*(?:#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```)/
+
+/** 工具栏按钮的 mousedown 会把焦点从编辑区移走，IR/WYSIWYG 的 DOM 选区随之失效；拦掉默认行为后选区保持原样 */
+function bindMarkButton(): void {
+  el.value
+    ?.querySelector('.vditor-toolbar [data-type="mark"]')
+    ?.addEventListener('mousedown', (e) => e.preventDefault())
+}
+
+function applyHighlight(): void {
+  if (!vditor) return
+  // 以 Vditor 内部真实模式为准：工具栏自身的 edit-mode 项切模式不会回写 store.mdMode
+  const mode = vditor.getCurrentMode()
+  if (mode === 'sv') highlightSv(vditor)
+  else highlightInline(mode)
+}
+
+/** sv 侧是 textarea：insertValue 内部即 setRangeText 替换选区，并跑完整管线（预览 + options.input + undo） */
+function highlightSv(vd: Vditor): void {
+  const ta = locateEditingEl('sv')
+  if (!(ta instanceof HTMLTextAreaElement)) return
+  const start = ta.selectionStart
+  const end = ta.selectionEnd
+  const sel = ta.value.slice(start, end)
+  if (!sel.trim()) {
+    vd.insertValue('====')
+    ta.setSelectionRange(start + 2, start + 2)
+    return
+  }
+  // 已高亮则就地取消：写成 ====x==== 会让标记失效，用户无法手工修回
+  const inner = sel.length >= 4 && sel.startsWith('==') && sel.endsWith('==')
+  const outer =
+    ta.value.slice(start - 2, start) === '==' && ta.value.slice(end, end + 2) === '=='
+  if (inner || outer) {
+    const from = inner ? start : start - 2
+    const to = inner ? end : end + 2
+    const plain = inner ? sel.slice(2, -2) : sel
+    ta.setSelectionRange(from, to)
+    vd.insertValue(plain)
+    ta.setSelectionRange(from, from + plain.length)
+    return
+  }
+  const lines = sel.split('\n')
+  const text = lines
+    .map((line) => (BLOCK_LINE.test(line) ? line : `==${line}==`))
+    .join('\n')
+  vd.insertValue(text)
+  // 单行只选中被包裹的文字（与工具栏加粗/斜体一致），多行整体选中
+  if (lines.length === 1) ta.setSelectionRange(start + 2, start + 2 + sel.length)
+  else ta.setSelectionRange(start, start + text.length)
+}
+
+/** ir / wysiwyg 是 contenteditable：execCommand 替换选区并抛原生 input，Vditor 据此重排、回调 options.input */
+function highlightInline(mode: MdMode): void {
+  const target = locateEditingEl(mode)
+  const sel = window.getSelection()
+  if (!target || !sel || sel.rangeCount === 0 || !sel.anchorNode) return
+  if (!target.contains(sel.anchorNode)) return
+  const anchor = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement
+  if (anchor?.closest('mark, [data-type="mark"]')) return
+  const text = sel.toString()
+  if (text.includes('\n')) return
+  document.execCommand('insertText', false, `==${text}==`)
+  if (!text) caretBack(2)
+}
+
+/** 插入 ==== 后把折叠光标左移两格，落在两对 == 之间；非常规落点（元素偏移）就保持原位 */
+function caretBack(n: number): void {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return
+  const node = sel.anchorNode
+  const off = sel.anchorOffset
+  if (node?.nodeType !== Node.TEXT_NODE || off < n) return
+  const r = document.createRange()
+  r.setStart(node, off - n)
+  r.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(r)
 }
 
 /** 在编辑元素上挂原生事件触发打字机 / 专注模式；build 重建与卸载时都要 detach */

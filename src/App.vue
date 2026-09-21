@@ -254,6 +254,7 @@ import {
   takePendingOpenPaths,
 } from './tauri'
 import { buildStandaloneHtml, inlineWorkspaceImages, printHtml } from './export'
+import { hljsStyle } from './theme'
 import { openFileInNewWindow } from './multiwindow'
 import type { FileNode, Heading } from './types'
 import TitleBar from './components/TitleBar.vue'
@@ -546,6 +547,7 @@ async function currentHtml(): Promise<string | null> {
       handwritingFont: store.handwritingFont,
       handwritingFontName: store.handwritingFontName,
       fontSize: store.fontSize,
+      codeStyle: hljsStyle(store.theme),
     })
   } catch (e) {
     logError(`导出失败：${e}`)

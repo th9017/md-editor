@@ -19,11 +19,17 @@ const DOC_CSS = `
     font-family: Consolas, 'Courier New', monospace; font-size: 0.88em;
     background: #f3f4f6; border-radius: 4px; padding: 0.15em 0.4em;
   }
+  .md-doc mark {
+    background: #fff1a8; color: inherit; border-radius: 3px; padding: 0 2px;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
   .md-doc pre {
     background: #f6f8fa; border: 1px solid #e2e6ea; border-radius: 8px;
     padding: 12px 14px; overflow: auto; line-height: 1.6;
   }
   .md-doc pre code { background: transparent; padding: 0; font-size: 0.9em; }
+  /* 抵消 hljs 自带的 padding: 1em 与白底，代码块保留 pre 自己的底与内边距 */
+  .md-doc pre code.hljs { padding: 0; background: transparent; }
   .md-doc blockquote {
     margin: 0.8em 0; padding: 0.2em 1em; color: #57606a;
     border-left: 3px solid #d0d7de;
@@ -83,6 +89,8 @@ export interface ExportStyleOptions {
   handwritingFont?: string
   handwritingFontName?: string
   fontSize?: number
+  /** 应用当前主题的代码高亮样式名：Vditor 的高亮样式表是全局单例，这里传同名才不会把编辑器里的配色改掉 */
+  codeStyle?: string
 }
 
 /** 把磁盘字体文件读成 data URL（导出 HTML 内联用；分块拼接避免大文件卡死） */
@@ -98,6 +106,34 @@ async function fileToDataUrl(path: string): Promise<string> {
   return `data:${mime};base64,${btoa(bin)}`
 }
 
+/** 给导出 HTML 里的代码块补 hljs 标记：sv 模式经 lute.Md2HTML 导出，产物里没有 <span class="hljs-*"> */
+async function highlightCode(html: string, codeStyle: string): Promise<string> {
+  if (!html.includes('<code')) return html
+  // 已经是渲染态（ir/wysiwyg 导出）就原样返回：再跑一遍时 Vditor 会把 "language-x hljs"
+  // 当成语言名，取不到语言就按 plaintext 重写，反而把已有的配色抹掉
+  if (/class="[^"]*\bhljs\b/.test(html)) return html
+  const box = document.createElement('div')
+  box.innerHTML = html
+  try {
+    // 动态导入：导出是低频路径，别把编辑器内核拉回启动主包
+    const { default: Vditor } = await import('vditor')
+    // highlightRender 不等 hljs 脚本加载完就返回（内部 promise 没有往外抛），
+    // 等它注入的两个脚本就绪后再让出一轮事件循环，标记才一定补完
+    Vditor.highlightRender({ enable: true, style: codeStyle }, box, '/vditor')
+    for (let i = 0; i < 60; i++) {
+      const ready =
+        document.getElementById('vditorHljsScript') &&
+        document.getElementById('vditorHljsThirdScript')
+      if (ready) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    await new Promise((r) => setTimeout(r, 0))
+  } catch {
+    /* 高亮失败时按原样导出 */
+  }
+  return box.innerHTML
+}
+
 /** 组装可离线打开的单文件 HTML */
 export async function buildStandaloneHtml(title: string, bodyHtml: string, options: ExportStyleOptions = {}): Promise<string> {
   let katexCss = ''
@@ -108,6 +144,14 @@ export async function buildStandaloneHtml(title: string, bodyHtml: string, optio
   } catch {
     /* KaTeX 资源缺失时公式退级显示 */
   }
+  // 导出文档固定白底，代码配色固定用浅色的 github（与 DOC_CSS 同一套调色板）
+  let hljsCss = ''
+  try {
+    hljsCss = await inlineCss('/vditor/dist/js/highlight.js/styles/github.min.css')
+  } catch {
+    /* 样式缺失时代码块退级为纯色文本 */
+  }
+  const body = await highlightCode(bodyHtml, options.codeStyle ?? 'github')
   const safeTitle = title.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c)
   // 编辑器导出的公式元素（.language-math）是原始 LaTeX 文本，这里用内联的 KaTeX 渲染
   const mathRender = katexJs
@@ -144,13 +188,14 @@ export async function buildStandaloneHtml(title: string, bodyHtml: string, optio
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${safeTitle}</title>
 <style>${katexCss}</style>
+<style>${hljsCss}</style>
 <style>${DOC_CSS}</style>
 <style>${handwritingCss}</style>
 <script>${katexJs}</` + `script>
 </head>
 <body>
 <article class="md-doc">
-${bodyHtml}
+${body}
 ${mathRender}
 </article>
 </body>

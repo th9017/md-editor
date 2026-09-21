@@ -2,6 +2,7 @@
 :root {
   --accent: #0969da;
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --hl-bg: #fff1a8;
   --editor-font-size: 15px;
   --bg-image: none;
   --bg-dim: 0.35;
@@ -54,6 +55,7 @@
   --editor-bg: #222327;
   --ok: #3fb950;
   --err: #f85149;
+  --hl-bg: rgb(255 214 102 / 0.26);
   color-scheme: dark;
 }
 
@@ -102,6 +104,7 @@
   --accent: #5b9bd5;
   --ok: #3fb950;
   --err: #f85149;
+  --hl-bg: rgb(255 214 102 / 0.30);
   color-scheme: dark;
 }
 
@@ -369,6 +372,16 @@ hr.sep {
 [data-focus='on'] .vditor-reset > *.vditor-focus,
 [data-focus='on'] .vditor-reset > *:focus {
   opacity: 1;
+}
+
+/* 行内高亮 ==文字==：浏览器默认给 mark 设了黑字（color: MarkText），暗色主题下必须显式继承正文色 */
+.vditor-reset mark {
+  background-color: var(--hl-bg);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 
 /* ============ 右键菜单 / 弹窗 ============ */
