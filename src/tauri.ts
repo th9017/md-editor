@@ -1,4 +1,4 @@
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { ask, open, save } from '@tauri-apps/plugin-dialog'
 import {
   readDir,
   readTextFile,
@@ -93,6 +93,26 @@ export async function readTextFileChecked(path: string, name: string): Promise<s
     throw new Error('暂不支持打开该类型文件（仅支持 Markdown 与文本类文件）')
   }
   return await readTextFile(path)
+}
+
+/** 原样读取文本文件，不按后缀过滤（手写块的 .svg 不在文本后缀表里，走不了上面的检查） */
+export async function readTextFileRaw(path: string): Promise<string> {
+  return await readTextFile(path)
+}
+
+/** 原样写入文本文件（createFile 只能建空文件；手写块 SVG 是文本，无需走二进制接口） */
+export async function writeTextFileRaw(path: string, text: string): Promise<void> {
+  await writeTextFile(path, text)
+}
+
+/** 系统确认对话框；返回 true = 用户点了「确定」 */
+export async function askConfirm(
+  message: string,
+  title: string,
+  okLabel: string,
+  cancelLabel: string,
+): Promise<boolean> {
+  return (await ask(message, { title, kind: 'warning', okLabel, cancelLabel })) === true
 }
 
 // ---------- 文件管理（文件树新建/重命名/删除） ----------

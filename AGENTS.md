@@ -22,6 +22,7 @@
 | `src/types.ts` | 前后端共享类型（Rust 端 Serialize 结构需与此对应） |
 | `src/theme.ts` | 主题行为描述符（深浅判定、hljs 高亮样式、CodeMirror 暗色判定） |
 | `src/fuzzy.ts` | 子序列模糊匹配（快速打开 / 命令面板共用） |
+| `src/ink.ts` | 手写块领域逻辑：笔画模型、采样简化、变宽分段、笔画命中测试、SVG 序列化与防御式解析（纯函数，不依赖 store / tauri / Vue） |
 | `src/export.ts` | 导出：单文件 HTML（内联 KaTeX）、PDF 打印、内容组装 |
 | `src/multiwindow.ts` | 多窗口：`openFileInNewWindow()` |
 | `src/components/*.vue` | UI 组件；面板类组件只消费 store 与 tauri.ts，不直接 invoke |
@@ -68,6 +69,10 @@ cd src-tauri && cargo check   # Rust 类型检查，必须零错误
 11. **GUI 派生控制台子进程必须加 CREATE_NO_WINDOW**（`std::os::windows::process::CommandExt::creation_flags(0x0800_0000)`）：release 构建是 GUI 子系统，git 等控制台程序每次被调用都会弹终端窗口并抢焦点，进而触发 focus 刷新形成无限弹窗循环；debug 构建有控制台不会暴露此问题
 12. **工作区相对路径的图片在 WebView 里默认 404**：`<img src="assets/x.png">` 相对的是应用自身地址而非磁盘。渲染层用 `convertFileSrc`（需 tauri.conf 的 assetProtocol）映射为绝对路径，且只改渲染 DOM——编辑器序列化会把 DOM src 写回源码，必须在 input 回调里把 asset 地址反解回相对路径（见 MarkdownEditor 的 `fixupImgs` / `deCorruptAssetUrls`）；导出用 `getHtmlPortable` + `inlineWorkspaceImages` 保证可移植
 13. **打字机模式有三个坑，都别踩**：① 滚动触发不能挂在 vditor 的 `options.input` 上——它被 `undoDelay=800ms` 防抖，连续打字期间永不触发；必须监听编辑元素的原生 `input`/`selectionchange`（sv 的 textarea 用元素级 selectionchange，contenteditable 用 document 级并守卫选区锚点在编辑元素内）。② 光标几何测量按编辑形态分流：sv 分屏源码侧是 textarea，光标不进入 `window.getSelection()`（vditor 源码在 sv 下直接 throw），须用镜像 div 复制计算样式测量光标纵坐标；contenteditable 用折叠到光标端的选区矩形，空行/块尾全零矩形时回退邻字符与父块，再向上找最近可滚动祖先改 `scrollTop`。③ **vditor 把三种编辑形态的元素（sv 的 textarea、ir/wysiwyg 的 pre、还有预览 div）同时放进 DOM，仅靠显隐切换**——定位编辑元素必须按 `store.mdMode` 限定选择器（如 `.vditor-ir .vditor-reset`），按类名粗放 `querySelector` 会命中隐藏形态的元素，监听全挂空
+
+14. **Vditor 的 `destroy()` 会把根元素 innerHTML 还原成 `originalInnerHTML`**（源码即 `element.innerHTML = originalInnerHTML`）—— 任何挂在 `.md-editor` 内部的浮层，连同 Teleport 的锚点注释都会一起消失。手写块画板因此作为 MarkdownEditor 的**兄弟根节点**再 Teleport 到 body，不能写进编辑区模板里
+15. **Vditor 工具栏自定义项的两个约束**：① `hotkey` 只在编辑器元素内 keydown 时被匹配并派发合成 click（焦点不在编辑器里就无效）；② `.vditor-toolbar__item svg` 带 `stroke-width: 0`，自定义图标**只能用实心 path**，描边图标会渲染成空白
+16. **渲染层给图片 src 加的缓存标记（`?t=`）会顺着 asset 地址写回 Markdown 正文**（同 §5-12）：`deCorruptAssetUrls` 反解时必须一并剥掉；反过来，覆盖同名图片后想刷新缩略图**不能**靠"删掉 `data-rel-src` 让 `fixupImgs` 重挂"——那时 `src` 已是 asset 地址，`isRelativeSrc` 会拒绝它，属性再也挂不回来（后续点击编辑与导出内联都会失效），只能直接换 `img.src`
 
 ## 6. 版本与发布流程
 

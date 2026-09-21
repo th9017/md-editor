@@ -169,6 +169,12 @@ export const store = reactive({
   // 行为设置
   autoSave: loadFlag<'on' | 'off'>('mdtex.autoSave', 'on') === 'on',
   imageFolder: localStorage.getItem('mdtex.imageFolder') || 'assets',
+  /** 手写块工具偏好：'' = 颜色跟随主题（取 --text），大小 = 基准粗细（逻辑像素） */
+  inkColor: /^#[0-9a-f]{6}$/i.test(localStorage.getItem('mdtex.inkColor') ?? '')
+    ? (localStorage.getItem('mdtex.inkColor') as string).toLowerCase()
+    : '',
+  inkSize: Math.min(16, Math.max(0.5, loadNum('mdtex.inkSize', 2.5))),
+  inkEraser: loadFlag<'on' | 'off'>('mdtex.inkEraser', 'off') === 'on',
   typewriter: loadFlag<'on' | 'off'>('mdtex.typewriter', 'off') === 'on',
   focusMode: loadFlag<'on' | 'off'>('mdtex.focusMode', 'off') === 'on',
   /** Vim 模式（仅作用于 CodeMirror 纯文本编辑器；Vditor 无 Vim 支持） */
@@ -768,6 +774,22 @@ export function setAutoSave(on: boolean) {
 export function setImageFolder(folder: string) {
   store.imageFolder = folder || 'assets'
   localStorage.setItem('mdtex.imageFolder', store.imageFolder)
+}
+
+export function setInkColor(color: string) {
+  store.inkColor = /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : ''
+  localStorage.setItem('mdtex.inkColor', store.inkColor)
+}
+
+export function setInkSize(size: number) {
+  const n = Number.isFinite(size) ? size : 2.5
+  store.inkSize = Math.min(16, Math.max(0.5, Math.round(n * 2) / 2))
+  localStorage.setItem('mdtex.inkSize', String(store.inkSize))
+}
+
+export function setInkTool(eraser: boolean) {
+  store.inkEraser = eraser
+  localStorage.setItem('mdtex.inkEraser', eraser ? 'on' : 'off')
 }
 
 export function setTypewriter(on: boolean) {

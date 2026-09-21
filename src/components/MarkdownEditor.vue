@@ -1,5 +1,7 @@
 <template>
   <div ref="el" class="md-editor"></div>
+  <!-- 手写块画板必须挂在编辑区之外：Vditor.destroy() 会把 .md-editor 的 innerHTML 还原成初始值 -->
+  <InkCanvas v-if="inkOpen" :doc="inkDoc" :on-submit="submitInk" @cancel="inkOpen = false" />
 </template>
 
 <script setup lang="ts">
@@ -7,9 +9,19 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { store } from '../store'
+import { logError, store } from '../store'
 import { hljsStyle, isDarkTheme } from '../theme'
-import { createFolder, joinPath, writeBinaryFile } from '../tauri'
+import {
+  baseName,
+  createFolder,
+  fileExists,
+  joinPath,
+  readTextFileRaw,
+  writeBinaryFile,
+  writeTextFileRaw,
+} from '../tauri'
+import { newInkDoc, parseInkSvg, type InkDoc } from '../ink'
+import InkCanvas from './InkCanvas.vue'
 import type { Heading, MdMode } from '../types'
 
 type VditorOptions = ConstructorParameters<typeof Vditor>[1]
@@ -34,6 +46,16 @@ const TOOLBAR: ToolbarItem[] = [
     // Vditor 的图标精灵图里没有高亮图标，自带 path；样式由 .vditor-toolbar__item svg 接管（fill: currentColor）
     icon: '<svg viewBox="0 0 32 32"><path d="M14.8 18.6 25.9 7.5a1.7 1.7 0 0 1 2.4 0l2.2 2.2a1.7 1.7 0 0 1 0 2.4L19.4 23.2z"/><path d="M13 20.4 18.6 26l-7.7 2.3a1 1 0 0 1-1.3-.7L7.6 21z"/><path d="M4 29.2h24a1.4 1.4 0 0 1 0 2.8H4a1.4 1.4 0 0 1 0-2.8z"/></svg>',
     click: () => applyHighlight(),
+  },
+  {
+    name: 'ink',
+    tip: '手写块',
+    tipPosition: 'ne',
+    // ⇧⌘K（Windows 上即 Ctrl+Shift+K）；Vditor 内置只用掉了 ⌘K（链接）
+    hotkey: '⇧⌘K',
+    // 图标只能用实心 path：.vditor-toolbar__item svg 带 stroke-width: 0，描边图标会不可见
+    icon: '<svg viewBox="0 0 32 32"><path d="M23.3 2.6a2.8 2.8 0 0 1 4 0l2.1 2.1a2.8 2.8 0 0 1 0 4L15.3 22.8l-6.1-6.1z"/><path d="M7.6 18.3 13.9 24.6 8.4 26.9a1.4 1.4 0 0 1-1.8-.7L3.2 20.2z"/><path d="M4 29.2c1.7 0 2.5-1.1 4.2-1.1s2.5 1.1 4.2 1.1 2.5-1.1 4.2-1.1 2.5 1.1 4.2 1.1 2.5-1.1 4.2-1.1v2.2H4z"/></svg>',
+    click: () => openInk(),
   },
   'link',
   '|',
@@ -107,7 +129,7 @@ function build(mode: MdMode): void {
       setupScrollSpy()
       setupCaretListeners(mode)
       setupImgFixup()
-      bindMarkButton()
+      bindToolbarButtons()
       fixupImgs()
       // 打字机开关已开时（新建 / 切文件 / 切模式重建）：先补上下半屏 padding（首尾行才能居中），
       // 再把光标行立即居中；稍后重试一次防渲染未稳
@@ -139,7 +161,10 @@ function fixupImgs(): void {
       /* 保留原样 */
     }
     img.dataset.relSrc = src
-    img.src = convertFileSrc(joinPath(store.root, decoded))
+    const abs = joinPath(store.root, decoded)
+    // 手写块覆盖同名文件后必须换一次地址才能立刻看到新图；该标记只存在于渲染层
+    const bust = inkBust.get(inkKey(abs))
+    img.src = convertFileSrc(abs) + (bust ? `?t=${bust}` : '')
   })
 }
 
@@ -174,7 +199,8 @@ function deCorruptAssetUrls(value: string): string {
   return value.replace(/https?:\/\/asset\.localhost\/[^\s)"'<>\\]+/g, (m) => {
     try {
       const abs = decodeURIComponent(m.replace(/^https?:\/\/asset\.localhost\//, ''))
-      return relPathForward(abs)
+      // 渲染层给手写块加的缓存标记（?t=）不能写回源码
+      return relPathForward(abs).replace(/\?t=\d+$/, '')
     } catch {
       return m
     }
@@ -359,10 +385,12 @@ function locateEditingEl(mode: MdMode): HTMLElement | null {
 const BLOCK_LINE = /^\s*(?:#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```)/
 
 /** 工具栏按钮的 mousedown 会把焦点从编辑区移走，IR/WYSIWYG 的 DOM 选区随之失效；拦掉默认行为后选区保持原样 */
-function bindMarkButton(): void {
-  el.value
-    ?.querySelector('.vditor-toolbar [data-type="mark"]')
-    ?.addEventListener('mousedown', (e) => e.preventDefault())
+function bindToolbarButtons(): void {
+  for (const name of ['mark', 'ink']) {
+    el.value
+      ?.querySelector(`.vditor-toolbar [data-type="${name}"]`)
+      ?.addEventListener('mousedown', (e) => e.preventDefault())
+  }
 }
 
 function applyHighlight(): void {
@@ -434,6 +462,171 @@ function caretBack(n: number): void {
   r.collapse(true)
   sel.removeAllRanges()
   sel.addRange(r)
+}
+
+// ---------- 手写块（参照 notekit：墨迹作为文档里的一块矢量对象） ----------
+
+/** 手写块覆盖同名 SVG 后要换一次渲染地址才能立刻看到新图；这个标记只加在渲染层，不写回源码。
+ *  键要归一化：插入时用的是 `assets/x.svg`（正斜杠），而落盘路径经 joinPath 是反斜杠，不归一会查不到。 */
+const inkBust = new Map<string, number>()
+const inkKey = (p: string): string => p.replaceAll('/', '\\')
+const inkOpen = ref(false)
+const inkDoc = ref<InkDoc>(newInkDoc())
+/** 重编辑时指向被覆盖的 SVG 绝对路径；'' = 新建 */
+let inkTarget = ''
+let inkCaret: InkCaret | null = null
+
+interface InkCaret {
+  mode: MdMode
+  range: Range | null
+  svStart: number
+  svEnd: number
+}
+
+/** 打开画板前捕获光标/选区：模态会抢焦点，保存后要落回原处插入 */
+function captureCaret(): InkCaret {
+  const mode = vditor?.getCurrentMode() ?? store.mdMode
+  if (mode === 'sv') {
+    const ta = locateEditingEl('sv')
+    const area = ta instanceof HTMLTextAreaElement ? ta : null
+    return { mode, range: null, svStart: area?.selectionStart ?? 0, svEnd: area?.selectionEnd ?? 0 }
+  }
+  const sel = window.getSelection()
+  const host = locateEditingEl(mode)
+  const range =
+    sel && sel.rangeCount > 0 && sel.anchorNode && host?.contains(sel.anchorNode)
+      ? sel.getRangeAt(0).cloneRange()
+      : null
+  return { mode, range, svStart: 0, svEnd: 0 }
+}
+
+function openInk(): void {
+  inkCaret = captureCaret()
+  inkTarget = ''
+  inkDoc.value = newInkDoc()
+  inkOpen.value = true
+}
+
+/** 文件名带上时间戳，重名依次追加序号，避免覆盖别人的手写块 */
+async function allocInkName(dir: string): Promise<string> {
+  const base = `sketch-${stamp()}`
+  for (let i = 0; i < 50; i++) {
+    const name = i === 0 ? `${base}.svg` : `${base}-${i + 1}.svg`
+    if (!(await fileExists(joinPath(dir, name)))) return name
+  }
+  return `${base}-${rand4()}.svg`
+}
+
+/** 落盘 + 插入：磁盘与光标的工作全在这里，画板组件只负责画 */
+async function submitInk(svg: string): Promise<string | null> {
+  if (!store.root) return '尚未打开工作区文件夹'
+  const vd = vditor
+  if (!vd) return '编辑器尚未就绪'
+  try {
+    const dir = joinPath(store.root, store.imageFolder)
+    await createFolder(dir)
+    let abs = inkTarget
+    let name = abs ? baseName(abs) : ''
+    if (!abs) {
+      name = await allocInkName(dir)
+      abs = joinPath(dir, name)
+    }
+    await writeTextFileRaw(abs, svg)
+    inkBust.set(inkKey(abs), Date.now())
+    const rel = `${store.imageFolder.replaceAll('\\', '/')}/${name}`
+    const isNew = inkTarget === ''
+    inkTarget = ''
+    inkOpen.value = false
+    if (isNew) insertSketchLink(rel)
+    else refreshInkImage(rel)
+    return null
+  } catch (e) {
+    return `手写块保存失败：${e}`
+  }
+}
+
+function insertSketchLink(rel: string): void {
+  const vd = vditor
+  if (!vd) return
+  const md = `![${baseName(rel)}](${rel})`
+  const caret = inkCaret
+  inkCaret = null
+  if (vd.getCurrentMode() === 'sv') {
+    const ta = locateEditingEl('sv')
+    if (ta instanceof HTMLTextAreaElement) {
+      ta.focus({ preventScroll: true })
+      ta.setSelectionRange(caret?.svStart ?? ta.selectionStart, caret?.svEnd ?? ta.selectionEnd)
+    }
+    vd.insertValue(md)
+    queueFixup()
+    return
+  }
+  const mode = vd.getCurrentMode()
+  const target = locateEditingEl(mode)
+  target?.focus({ preventScroll: true })
+  let inserted = false
+  if (caret?.range && target?.contains(caret.range.startContainer)) {
+    try {
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(caret.range)
+      inserted = document.execCommand('insertText', false, md)
+    } catch {
+      inserted = false
+    }
+  }
+  // Range 失效时退回 Vditor 自己记得的落点（ir.range / wysiwyg.range）
+  if (!inserted) vd.insertValue(md)
+  queueFixup()
+}
+
+/** 覆盖同名文件后让页面上的缩略图换一个带缓存标记的地址。
+ *  不能靠「删掉 data-rel-src 让 fixupImgs 重挂」：那时 src 已经是 asset 地址，
+ *  isRelativeSrc 会拒绝它，属性再也挂不回来（后续点击编辑与导出内联都会失效）。 */
+function refreshInkImage(rel: string): void {
+  if (!store.root) return
+  const abs = joinPath(store.root, rel)
+  const src = convertFileSrc(abs) + `?t=${inkBust.get(inkKey(abs)) ?? Date.now()}`
+  el.value?.querySelectorAll<HTMLImageElement>('img[data-rel-src]').forEach((img) => {
+    if (img.dataset.relSrc === rel) img.src = src
+  })
+}
+
+/** 点击已插入的手写块 → 读回 SVG 重开画板（识别靠 <metadata> 内容而不是文件名） */
+function onEditorClickCapture(e: MouseEvent): void {
+  const img = (e.target as HTMLElement | null)?.closest?.('img') as HTMLImageElement | null
+  if (!img || !el.value?.contains(img)) return
+  const rel = img.dataset.relSrc ?? ''
+  if (!/\.svg$/i.test(rel)) return
+  e.preventDefault()
+  e.stopPropagation()
+  void openInkFromImage(rel)
+}
+
+async function openInkFromImage(rel: string): Promise<void> {
+  if (!store.root) return
+  let decoded = rel
+  try {
+    decoded = decodeURIComponent(rel)
+  } catch {
+    /* 保留原样 */
+  }
+  const abs = joinPath(store.root, decoded)
+  try {
+    const text = await readTextFileRaw(abs)
+    const doc = parseInkSvg(text)
+    if (!doc) {
+      // 含手写块标记却解析不出 = 数据损坏，提示；普通图片静默放行
+      if (text.includes('mdtex-ink')) logError(`手写块数据已损坏，无法编辑：${baseName(abs)}`)
+      return
+    }
+    inkCaret = captureCaret()
+    inkTarget = abs
+    inkDoc.value = doc
+    inkOpen.value = true
+  } catch {
+    /* 文件被删 / 改名：保持原样，与其它丢失的图片一致 */
+  }
 }
 
 /** 在编辑元素上挂原生事件触发打字机 / 专注模式；build 重建与卸载时都要 detach */
@@ -709,6 +902,8 @@ defineExpose({
 onMounted(() => {
   window.addEventListener('resize', onWindowResize)
   build(store.mdMode)
+  // 挂在组件根上（不是 build 里）：Vditor 重建只清 innerHTML，不影响这里的监听
+  el.value?.addEventListener('click', onEditorClickCapture, true)
 })
 watch(() => store.mdMode, (m) => build(m))
 // 主题切换的重建由 App.vue 的 :key（含 theme）驱动，这里不再重复 watch 重建
@@ -734,10 +929,16 @@ watch(
 )
 watch(() => props.path, () => {
   /* 切换文件时光标状态随重建自动重置 */
+  if (inkOpen.value) {
+    // 画板里的墨迹属于旧文档，关掉别插错地方
+    inkOpen.value = false
+    logError('已切换文件，手写块编辑已取消')
+  }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
+  el.value?.removeEventListener('click', onEditorClickCapture, true)
   clearTimeout(outlineTimer)
   cancelAnimationFrame(spyRaf)
   cancelAnimationFrame(typewriterRaf)
